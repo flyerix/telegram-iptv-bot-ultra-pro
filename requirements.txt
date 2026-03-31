@@ -1,0 +1,44 @@
+# ============================================
+# HelperBot - Requisiti e Dipendenze
+# ============================================
+
+# ============================================
+# DIPENDENZE PRINCIPALI (OBBLIGATORIE)
+# ============================================
+
+# Bot Telegram - versione 20+ con handler per callback query
+python-telegram-bot>=20.0
+
+# Server Flask per keep-alive (rendering/pinging)
+Flask>=2.0.0
+
+# ============================================
+# DIPENDENZE OPZIONALI (FUNZIONALITÀ AVANZATE)
+# ============================================
+
+# Google Drive Backup
+google-api-python-client>=2.0.0
+google-auth-oauthlib>=0.4.0
+
+# Scheduler per job automatici
+APScheduler>=3.10.0
+
+# ============================================
+# DIPENDENZE DI UTILITÀ
+# ============================================
+
+# Gestione variabili d'ambiente
+python-dotenv>=0.19.0
+
+# ============================================
+# INSTALLAZIONE
+# ============================================
+
+# Installa tutte le dipendenze principali:
+# pip install -r requirements.txt
+
+# Installa solo le dipendenze principali (senza funzionalità avanzate):
+# pip install python-telegram-bot>=20.0 Flask>=2.0.0 python-dotenv>=0.19.0
+
+# Installa con tutte le funzionalità:
+# pip install python-telegram-bot>=20.0 Flask>=2.0.0 python-dotenv>=0.19.0 google-api-python-client>=2.0.0 google-auth-oauthlib>=0.4.0 APScheduler>=3.10.0
