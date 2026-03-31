@@ -219,6 +219,17 @@ def get_logger_manager() -> Optional[LoggerManager]:
     return _logger_manager
 
 
+def get_logger(name: str = "helperbot") -> logging.Logger:
+    """
+    Restituisce un logger standard per uso compatibilità.
+    Args:
+        name: Nome del logger
+    Returns:
+        logging.Logger: Logger configurato
+    """
+    return logging.getLogger(name)
+
+
 def log_error(message: str, level: str = "ERROR"):
     """
     Logga un errore.
@@ -308,6 +319,7 @@ def _auto_init():
 __all__ = [
     "setup_logger",
     "get_logger_manager",
+    "get_logger",  # Alias per compatibilità
     "log_error",
     "log_access",
     "log_ticket",
