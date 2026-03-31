@@ -1255,7 +1255,8 @@ def main():
     
     # Configura admin nella manutenzione
     if ADMIN_IDS:
-        manutenzione.set_admin_ids(ADMIN_IDS)
+        for admin_id in ADMIN_IDS:
+            manutenzione.aggiungi_admin(str(admin_id))
         logger.info(f"Admin configurati: {ADMIN_IDS}")
     
     # Crea Application
