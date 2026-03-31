@@ -95,7 +95,7 @@ app = None
     STATE_ONBOARDING,
     STATE_FAQ_CATEGORIA,
     STATE_FAQ_RISPOSTA,
-) = range(8)
+) = range(7)
 
 # Callback data prefixes
 CB_FAQ = "faq_"
