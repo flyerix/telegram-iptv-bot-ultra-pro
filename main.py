@@ -45,7 +45,7 @@ from modules.ticket_system import TicketSystem, StatoTicket, PrioritaTicket
 from modules.rate_limiter import RateLimiter
 from modules.faq_system import FaqSystem
 from modules.backup_system import BackupSystem
-from modules.onboarding import Onboarding
+from modules.onboarding import OnboardingManager
 from modules.stato_servizio import StatoServizio, STATO_OPERATIVO, STATO_PROBLEMI
 from modules.manutenzione import Manutenzione
 from modules.notifications import Notifications, TipoNotifica
@@ -741,15 +741,17 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
     
     if data == f"{CB_ONBOARDING}start":
         # Avvia onboarding
-        step = onboarding.get_current_step(user_id)
-        if step:
-            await mostra_step_onboarding(query, user_id, step)
+        username = update.effective_user.username or ""
+        msg, keyboard = onboarding.genera_messaggio_step(1, username)
+        if msg:
+            await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
     
     elif data.startswith(f"{CB_ONBOARDING}step_"):
         step_num = int(data.replace(f"{CB_ONBOARDING}step_", ""))
-        step = onboarding.get_step(user_id, step_num)
-        if step:
-            await mostra_step_onboarding(query, user_id, step)
+        username = update.effective_user.username or ""
+        msg, keyboard = onboarding.genera_messaggio_step(step_num, username)
+        if msg:
+            await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
     
     elif data == f"{CB_ONBOARDING}skip":
         # Salta onboarding
@@ -1252,7 +1254,7 @@ def main():
     rate_limiter = RateLimiter(persistence)
     faq_system = FaqSystem(persistence)
     backup_system = BackupSystem(persistence)
-    onboarding = Onboarding(persistence)
+    onboarding = OnboardingManager(persistence)
     stato_servizio = StatoServizio(persistence)
     manutenzione = Manutenzione(persistence)
     notifications = Notifications(persistence)
