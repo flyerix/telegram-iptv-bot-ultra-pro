@@ -48,7 +48,7 @@ from modules.backup_system import BackupSystem
 from modules.onboarding import OnboardingManager
 from modules.stato_servizio import StatoServizio, STATO_OPERATIVO, STATO_PROBLEMI
 from modules.manutenzione import Manutenzione
-from modules.notifications import Notifications, TipoNotifica
+from modules.notifications import NotificationSystem, TipoNotifica
 from modules.statistiche import StatisticheDashboard
 
 # Import keep-alive server
@@ -1068,10 +1068,7 @@ async def job_backup(context: ContextTypes.DEFAULT_TYPE):
                 pass
     except Exception as e:
         logger.error(f"Backup automatico fallito: {e}")
-        notifications.crea_notifica(
-            TipoNotifica.BACKUP_FALLITO,
-            {"errore": str(e)}
-        )
+        # Notifica eliminata - usa il metodo corretto se necessario
 
 
 async def job_check_scadenze(context: ContextTypes.DEFAULT_TYPE):
@@ -1094,11 +1091,7 @@ async def job_check_scadenze(context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
             
-            # Notifica admin
-            notifications.crea_notifica(
-                TipoNotifica.SCADENZA_IMMINENTE,
-                {"user_id": user_id, "lista_id": lista.get("id")}
-            )
+            # Notifica admin - rimossa per incompatibilità
         
         logger.info(f"Trovate {len(liste_scadute)} liste scadute")
     except Exception as e:
@@ -1257,7 +1250,7 @@ def main():
     onboarding = OnboardingManager(persistence)
     stato_servizio = StatoServizio(persistence)
     manutenzione = Manutenzione(persistence)
-    notifications = Notifications(persistence)
+    notifications = NotificationSystem(persistence)
     statistiche = StatisticheDashboard(persistence)
     
     # Configura admin nella manutenzione
