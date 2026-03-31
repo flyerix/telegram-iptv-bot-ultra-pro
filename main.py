@@ -711,7 +711,7 @@ async def handle_callback_faq(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     elif data.startswith(f"{CB_FAQ}view_"):
         faq_id = int(data.replace(f"{CB_FAQ}view_", ""))
-        faq = faq_system.get_faq(faq_id)
+        faq = faq_system.get_faq_id(faq_id)
         
         if not faq:
             await query.edit_message_text("❓ FAQ non trovata.")
