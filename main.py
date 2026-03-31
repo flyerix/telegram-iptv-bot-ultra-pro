@@ -680,7 +680,7 @@ async def handle_callback_faq(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     elif data.startswith(f"{CB_FAQ}categoria_"):
         cat_id = data.replace(f"{CB_FAQ}categoria_", "")
-        faqs = faq_system.get_faq_by_categoria(cat_id)
+        faqs = faq_system.get_faq_categoria(cat_id)
         
         if not faqs:
             await query.edit_message_text("❓ Nessuna FAQ in questa categoria.")
