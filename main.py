@@ -1246,7 +1246,7 @@ def main():
     ticket_system = TicketSystem(persistence)
     rate_limiter = RateLimiter(persistence)
     faq_system = FaqSystem(persistence)
-    backup_system = BackupSystem(persistence)
+    backup_system = BackupSystem()
     onboarding = OnboardingManager(persistence)
     stato_servizio = StatoServizio(persistence)
     manutenzione = Manutenzione(persistence)
