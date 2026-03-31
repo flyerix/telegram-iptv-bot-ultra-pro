@@ -123,7 +123,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_manutenzione(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Verifica se il bot è in modalità manutenzione."""
-    if manutenzione.is_attiva():
+    if manutenzione.is_manutenzione_attiva():
         user_id = update.effective_user.id if update.effective_user else 0
         
         # Gli admin possono sempre accedere
@@ -131,7 +131,7 @@ async def check_manutenzione(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return False
         
         # Messaggio di manutenzione
-        messaggio = manutenzione.get_messaggio()
+        messaggio = manutenzione.get_messaggio_manutenzione()
         if update.message:
             await update.message.reply_text(messaggio)
         elif update.callback_query:
@@ -606,8 +606,8 @@ async def cmd_manutenzione(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Toggle manutenzione
-    if manutenzione.is_attiva():
-        manutenzione.disattiva(str(user_id))
+    if manutenzione.is_manutenzione_attiva():
+        manutenzione.disattiva_manutenzione(str(user_id))
         await update.message.reply_text(
             "✅ <b>Manutenzione disattivata</b>\n\nIl bot è tornato operativo.",
             parse_mode=constants.ParseMode.HTML
@@ -939,7 +939,7 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
     
     elif data == f"{CB_ADMIN}manutenzione_attiva":
         # Attiva manutenzione
-        manutenzione.attiva("Manutenzione programmata", str(user_id))
+        manutenzione.attiva_manutenzione(str(user_id), "Manutenzione programmata")
         await query.edit_message_text(
             "🔧 <b>Manutenzione attivata</b>\n\nGli utenti normali sono bloccati.",
             parse_mode=constants.ParseMode.HTML
