@@ -386,11 +386,11 @@ def _run_server(port: int):
     global _server
     try:
         logger.info(f"Tentativo di avvio server Flask su porta {port}")
-        # threading=False per esecuzione bloccante - necessario per Render.com port detection
+        # threaded=True per gestire richieste in thread separati
         app.run(
             host='0.0.0.0',
             port=port,
-            threaded=False,
+            threaded=True,
             debug=False,
             use_reloader=False,  # Disabilita il reloader per evitare doppie istanze
             log_level=logging.INFO  # Assicura che il log di Flask sia visibile
