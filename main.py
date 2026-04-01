@@ -1727,7 +1727,10 @@ async def post_init(application: Application):
     
     # Avvia keep-alive server in background
     try:
-        start_keepalive(PORT)
+        start_keepalive(PORT, threaded=True)
+        # Attendi che il server sia completamente avviato prima di procedere
+        import time
+        time.sleep(3)
         logger.info(f"Keep-alive server avviato su {HOST}:{PORT}")
     except Exception as e:
         logger.error(f"Errore avvio keep-alive: {e}")

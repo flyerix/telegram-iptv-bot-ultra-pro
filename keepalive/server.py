@@ -283,20 +283,30 @@ def start_server(port: int = None, threaded: bool = False) -> bool:
         _start_time = time.time()
         stats["start_time"] = datetime.utcnow().isoformat()
         
+        # Configura Flask per mostrare tutti i log
+        import logging as flask_logging
+        app.logger.setLevel(flask_logging.INFO)
+        
         if threaded:
             # Avvia in un thread separato
             _server_thread = threading.Thread(
                 target=_run_server,
                 args=(port,),
-                daemon=True
+                daemon=False  # Non daemon per evitare chiusura prematura
             )
             _server_thread.start()
             logger.info(f"Server keep-alive avviato in background sulla porta {port}")
             
-            # Attendi che il server sia effettivamente in ascolto
+            # Attendi che il server sia effettivamente in ascolto - tempo maggiore
             logger.info("Attesa per binding del server...")
-            time.sleep(2)
-            logger.info("Thread server avviato, procedura completata")
+            max_wait = 10
+            waited = 0
+            while waited < max_wait:
+                time.sleep(1)
+                waited += 1
+                logger.info(f"Attesa binding server... ({waited}/{max_wait}s)")
+            
+            logger.info(f"Thread server avviato, procedura completata")
             
             # Avvia health check thread per monitorare il server
             health_thread = threading.Thread(
@@ -314,6 +324,8 @@ def start_server(port: int = None, threaded: bool = False) -> bool:
         
     except Exception as e:
         logger.error(f"Errore nell'avvio del server: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 
