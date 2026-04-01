@@ -265,7 +265,14 @@ def start_server(port: int = None, threaded: bool = True) -> bool:
     # Leggi la variabile d'ambiente PORT (standard Render.com)
     import os
     if port is None:
-        port = int(os.environ.get("PORT", os.environ.get("KEEPALIVE_PORT", "8080")))
+        port_env = os.environ.get("PORT") or os.environ.get("KEEPALIVE_PORT")
+        if port_env is None:
+            logger.warning("PORT environment variable not set, using default 8080")
+            port = 8080
+        else:
+            port = int(port_env)
+    
+    logger.info(f"Configurazione server: porta={port}, host=0.0.0.0")
     global _server, _server_thread, _is_running, _start_time
     
     if _is_running:
@@ -285,6 +292,11 @@ def start_server(port: int = None, threaded: bool = True) -> bool:
             )
             _server_thread.start()
             logger.info(f"Server keep-alive avviato in background sulla porta {port}")
+            
+            # Attendi che il server sia effettivamente in ascolto
+            logger.info("Attesa per binding del server...")
+            time.sleep(2)
+            logger.info("Thread server avviato, procedura completata")
             
             # Avvia health check thread per monitorare il server
             health_thread = threading.Thread(
@@ -309,6 +321,10 @@ def _health_check_loop(port: int):
     """
     Thread che monitora lo stato del server e lo riavvia se necessario.
     """
+    # Attendi 30 secondi prima del primo health check per dare tempo al server di avviarsi
+    logger.info("Health check: attesa iniziale di 30 secondi...")
+    time.sleep(30)
+    
     while _is_running:
         try:
             # Verifica che il server Flask risponda
@@ -357,16 +373,20 @@ def _run_server(port: int):
     """Funzione interna per eseguire il server Flask"""
     global _server
     try:
+        logger.info(f"Tentativo di avvio server Flask su porta {port}")
         # Usa threaded=True per gestire più richieste
         app.run(
             host='0.0.0.0',
             port=port,
             threaded=True,
             debug=False,
-            use_reloader=False  # Disabilita il reloader per evitare doppie istanze
+            use_reloader=False,  # Disabilita il reloader per evitare doppie istanze
+            log_level=logging.INFO  # Assicura che il log di Flask sia visibile
         )
     except Exception as e:
         logger.error(f"Errore nell'esecuzione del server: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         _is_running = False
 
 
