@@ -131,8 +131,7 @@ Questo è il tuo assistente per gestire tutto ciò che riguarda le liste IPTV in
 • <b>e molto altro...</b>
 
 <b>💡 Perché usare questo bot?</b>
-Tutto in un unico posto: richieste, supporto e informazioni sempre disponibili 24/7!
- premere "Avanti" per scoprire come richiedere la tua lista. per iniziare!""",
+Tutto in un unico posto: richieste, supporto e informazioni sempre disponibili 24/7!""""",
             inline_buttons=[
                 [
                     crea_inline_button("⏭️ Salta onboarding", f"{CB_SKIP}"),

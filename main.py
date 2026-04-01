@@ -45,7 +45,7 @@ from modules.ticket_system import TicketSystem, StatoTicket, PrioritaTicket
 from modules.rate_limiter import RateLimiter
 from modules.faq_system import FaqSystem
 from modules.backup_system import BackupSystem
-from modules.onboarding import OnboardingManager
+from modules.onboarding import OnboardingManager, MAX_STEPS, CB_PREV, CB_NEXT
 from modules.stato_servizio import StatoServizio, STATO_OPERATIVO, STATO_PROBLEMI
 from modules.manutenzione import Manutenzione
 from modules.notifications import NotificationSystem, TipoNotifica
@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 # Variabili globali
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x]
+ADMIN_IDS = [int(x.strip()) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
 KEEPALIVE_PORT = int(os.environ.get("KEEPALIVE_PORT", "8080"))
 KEEPALIVE_HOST = os.environ.get("KEEPALIVE_HOST", "0.0.0.0")
 
@@ -752,6 +752,34 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
         msg, keyboard = onboarding.genera_messaggio_step(step_num, username)
         if msg:
             await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
+    
+    elif data == f"{CB_ONBOARDING}next":
+        # Pulsante "Avanti" - vai al prossimo step
+        username = update.effective_user.username or ""
+        current_step = onboarding.get_step(user_id)
+        
+        if current_step < MAX_STEPS:
+            msg, keyboard = onboarding.genera_messaggio_step(current_step + 1, username)
+            if msg:
+                await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
+        else:
+            # Se siamo all'ultimo step, completa l'onboarding
+            onboarding.completa_onboarding(user_id)
+            await query.edit_message_text(
+                "✅ <b>Onboarding completato!</b>\n\n"
+                "Puoi sempre ripetere l'onboarding con /start",
+                parse_mode=constants.ParseMode.HTML
+            )
+    
+    elif data == f"{CB_ONBOARDING}prev":
+        # Pulsante "Precedente"
+        username = update.effective_user.username or ""
+        current_step = onboarding.get_step(user_id)
+        
+        if current_step > 1:
+            msg, keyboard = onboarding.genera_messaggio_step(current_step - 1, username)
+            if msg:
+                await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
     
     elif data == f"{CB_ONBOARDING}skip":
         # Salta onboarding
