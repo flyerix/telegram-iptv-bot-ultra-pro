@@ -157,6 +157,46 @@ async def rate_limit_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 # ==================== COMANDI UTENTE ====================
 
+async def mostra_menu_principale(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool = False, query: CallbackQuery = None):
+    """Mostra il menu principale con i pulsanti di navigazione."""
+    user = update.effective_user
+    user_id = update.effective_user.id
+    
+    # Costruisci il menu
+    keyboard = [
+        [
+            InlineKeyboardButton("🚀 Inizia Onboarding", callback_data=f"{CB_ONBOARDING}start"),
+            InlineKeyboardButton("❓ FAQ", callback_data=f"{CB_FAQ}categorie")
+        ],
+        [
+            InlineKeyboardButton("🎫 Crea Ticket", callback_data=f"{CB_TICKET}create"),
+            InlineKeyboardButton("📊 Il mio stato", callback_data=f"{CB_MENU}stato")
+        ]
+    ]
+    
+    # Aggiungi pulsanti admin se l'utente è admin
+    if user_id in ADMIN_IDS:
+        keyboard.append([
+            InlineKeyboardButton("⚙️ Menu Admin", callback_data=f"{CB_ADMIN}menu")
+        ])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    text = (f"👋 Benvenuto <b>{user.full_name}</b>!\n\n"
+        f"Sono HelperBot, il tuo assistente per la gestione IPTV.\n\n"
+        f"Posso aiutarti con:\n"
+        f"• 📺 Informazioni sulla tua lista IPTV\n"
+        f"• 🎫 Creare ticket di supporto\n"
+        f"• ❓ FAQ e guide\n"
+        f"• 📊 Stato del servizio\n\n"
+        f"Cosa vuoi fare?")
+    
+    if edit and query:
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /start - Avvia il bot."""
     user = update.effective_user
@@ -173,31 +213,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user.full_name
     )
     
-    # Messaggio di benvenuto
-    keyboard = [
-        [
-            InlineKeyboardButton("🚀 Inizia Onboarding", callback_data=f"{CB_ONBOARDING}start"),
-            InlineKeyboardButton("❓ FAQ", callback_data=f"{CB_FAQ}categorie")
-        ],
-        [
-            InlineKeyboardButton("🎫 Crea Ticket", callback_data=f"{CB_TICKET}create"),
-            InlineKeyboardButton("📊 Il mio stato", callback_data=f"{CB_MENU}stato")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"👋 Benvenuto <b>{user.full_name}</b>!\n\n"
-        f"Sono HelperBot, il tuo assistente per la gestione IPTV.\n\n"
-        f"Posso aiutarti con:\n"
-        f"• 📺 Informazioni sulla tua lista IPTV\n"
-        f"• 🎫 Creare ticket di supporto\n"
-        f"• ❓ FAQ e guide\n"
-        f"• 📊 Stato del servizio\n\n"
-        f"Cosa vuoi fare?",
-        reply_markup=reply_markup,
-        parse_mode=constants.ParseMode.HTML
-    )
+    # Mostra il menu principale
+    await mostra_menu_principale(update, context)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -905,7 +922,33 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     # Gestisci vari callback admin
-    if data == f"{CB_ADMIN}richieste":
+    if data == f"{CB_ADMIN}menu":
+        # Mostra menu admin
+        keyboard = [
+            [
+                InlineKeyboardButton("📋 Gestione Richieste", callback_data=f"{CB_ADMIN}richieste"),
+                InlineKeyboardButton("🎫 Gestione Ticket", callback_data=f"{CB_ADMIN}ticket")
+            ],
+            [
+                InlineKeyboardButton("💾 Gestione Backup", callback_data=f"{CB_ADMIN}backup"),
+                InlineKeyboardButton("📊 Statistiche", callback_data=f"{CB_ADMIN}stats")
+            ],
+            [
+                InlineKeyboardButton("🔧 Manutenzione", callback_data=f"{CB_ADMIN}manutenzione"),
+                InlineKeyboardButton("📡 Stato Servizio", callback_data=f"{CB_ADMIN}stato")
+            ],
+            [
+                InlineKeyboardButton("🏠 Menu Principale", callback_data=f"{CB_MENU}main")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "⚙️ <b>Menu Admin</b>",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    elif data == f"{CB_ADMIN}richieste":
         # Mostra richieste
         richieste = user_management.get_richieste_in_attesa()
         
@@ -996,21 +1039,36 @@ async def handle_callback_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     
     data = query.data
+    user_id = str(update.effective_user.id)
     
-    if data == f"{CB_MENU}stato":
-        # Mostra stato utente
-        user_id = str(update.effective_user.id)
-        lista = user_management.get_lista_utente(user_id)
+    if data == f"{CB_MENU}main":
+        # Torna al menu principale
+        await mostra_menu_principale(update, context)
         
-        if lista:
-            text = f"📺 <b>La tua lista IPTV</b>\n\n"
-            text += f"🔗 URL: <code>{lista.get('url', 'N/A')}</code>\n"
-            text += f"📊 Stato: {lista.get('stato', 'N/A')}\n"
-            text += f"📅 Scadenza: {lista.get('data_scadenza', 'N/A')}"
+    elif data == f"{CB_MENU}stato":
+        # Mostra stato utente
+        utente = user_management.get_utente(user_id)
+        lista_id = utente.get("lista_approvata") if utente else None
+        
+        if lista_id:
+            lista = user_management.get_lista(lista_id)
+            if lista:
+                text = f"📺 <b>La tua lista IPTV</b>\n\n"
+                text += f"🔗 URL: <code>{lista.get('url', 'N/A')}</code>\n"
+                text += f"📊 Stato: {lista.get('stato', 'N/A')}\n"
+                text += f"📅 Scadenza: {lista.get('data_scadenza', 'N/A')}"
+            else:
+                text = "📭 Non hai una lista IPTV attiva.\nUsa /richiedi per richiederne una."
         else:
             text = "📭 Non hai una lista IPTV attiva.\nUsa /richiedi per richiederne una."
         
-        await query.edit_message_text(text, parse_mode=constants.ParseMode.HTML)
+        # Aggiungi pulsante per tornare al menu
+        keyboard = [
+            [InlineKeyboardButton("🏠 Menu Principale", callback_data=f"{CB_MENU}main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
 
 
 # ==================== FUNZIONI HELPER ====================

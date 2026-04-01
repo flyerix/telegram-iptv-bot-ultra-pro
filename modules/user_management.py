@@ -56,6 +56,30 @@ class UserManagement:
         self.persistence = persistence
         logger.info("Modulo UserManagement inizializzato")
     
+    # ==================== GESTIONE LISTE UTENTE ====================
+    
+    def get_lista_utente(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Ottiene la lista IPTV associata a un utente.
+        
+        Args:
+            user_id: ID dell'utente
+            
+        Returns:
+            Dizionario con i dati della lista o None se non associata
+        """
+        try:
+            utente = self.get_utente(user_id)
+            if not utente:
+                return None
+            lista_id = utente.get("lista_approvata")
+            if not lista_id:
+                return None
+            return self.get_lista(lista_id)
+        except Exception as e:
+            logger.error(f"Errore nel recupero della lista per l'utente {user_id}: {e}")
+            return None
+    
     # ==================== GESTIONE UTENTI ====================
     
     def registra_utente(self, user_id: str, username: str, nome: str) -> Dict[str, Any]:
