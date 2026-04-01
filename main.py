@@ -69,6 +69,21 @@ ADMIN_IDS = [int(x.strip()) for x in os.environ.get("ADMIN_IDS", "").split(",") 
 KEEPALIVE_PORT = int(os.environ.get("KEEPALIVE_PORT", "8080"))
 KEEPALIVE_HOST = os.environ.get("KEEPALIVE_HOST", "0.0.0.0")
 
+# Timeout configuration per il polling (secondi)
+POLLING_TIMEOUT = float(os.environ.get("POLLING_TIMEOUT", "10"))
+LONG_POLLING_TIMEOUT = float(os.environ.get("LONG_POLLING_TIMEOUT", "60"))
+READ_TIMEOUT = float(os.environ.get("READ_TIMEOUT", "15"))
+WRITE_TIMEOUT = float(os.environ.get("WRITE_TIMEOUT", "15"))
+CONNECT_TIMEOUT = float(os.environ.get("CONNECT_TIMEOUT", "10"))
+
+# Configurazione restart automatico
+MAX_RESTART_ATTEMPTS = int(os.environ.get("MAX_RESTART_ATTEMPTS", "5"))
+RESTART_DELAY = int(os.environ.get("RESTART_DELAY", "5"))
+
+# Contatori per restart
+_restart_attempts = 0
+_last_restart_time = None
+
 # Istanziazione moduli (inizializzati in main())
 persistence = None
 user_management = None
@@ -114,6 +129,7 @@ CB_RICHIESTA = "richiesta_"
 
 # ==================== GESTIONE ERRORI ====================
 
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gestisce gli errori del bot."""
     logger.error(f"Eccezione durante l'elaborazione: {context.error}")
@@ -122,6 +138,40 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(
             "❌ Si è verificato un errore inatteso. Riprova più tardi."
         )
+
+
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    """Gestisce le eccezioni non catturate a livello globale."""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    
+    logger.critical(
+        f"Eccezione non gestita: {exc_type.__name__}: {exc_value}",
+        exc_info=(exc_type, exc_value, exc_traceback)
+    )
+    
+    # Logica di restart
+    global _restart_attempts, _last_restart_time
+    from datetime import datetime
+    
+    current_time = datetime.now()
+    
+    # Reset contatori se è passato più di 5 minuti dall'ultimo tentativo
+    if _last_restart_time and (current_time - _last_restart_time).total_seconds() > 300:
+        _restart_attempts = 0
+    
+    if _restart_attempts < MAX_RESTART_ATTEMPTS:
+        _restart_attempts += 1
+        _last_restart_time = current_time
+        
+        logger.info(f"Tentativo di restart {_restart_attempts}/{MAX_RESTART_ATTEMPTS} in corso...")
+    else:
+        logger.critical("Raggiunto il numero massimo di tentativi di restart. Bot arrestato.")
+
+
+# Registra l'handler globale
+sys.excepthook = global_exception_handler
 
 
 # ==================== MIDDLEWARE ====================
@@ -1675,11 +1725,39 @@ def main():
     print(f"🌐 Keep-alive: {KEEPALIVE_HOST}:{KEEPALIVE_PORT}")
     print("=" * 50)
     
-    # Avvia polling
-    app.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    # Avvia polling con gestione errori e restart automatico
+    while True:
+        try:
+            logger.info("Avvio polling...")
+            app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True
+            )
+        except Exception as e:
+            logger.error(f"Errore nel polling: {e}")
+            global _restart_attempts, _last_restart_time
+            
+            from datetime import datetime
+            current_time = datetime.now()
+            
+            # Reset contatori se è passato più di 5 minuti
+            if _last_restart_time and (current_time - _last_restart_time).total_seconds() > 300:
+                _restart_attempts = 0
+            
+            if _restart_attempts < MAX_RESTART_ATTEMPTS:
+                _restart_attempts += 1
+                _last_restart_time = current_time
+                
+                logger.info(f"Restart polling tentativo {_restart_attempts}/{MAX_RESTART_ATTEMPTS}...")
+                
+                # Delay crescente (exponential backoff)
+                delay = RESTART_DELAY * (2 ** (_restart_attempts - 1))
+                logger.info(f"Attesa {delay} secondi prima del restart...")
+                import time
+                time.sleep(delay)
+            else:
+                logger.critical("Raggiunto numero massimo tentativi. Arresto bot.")
+                break
 
 
 if __name__ == "__main__":

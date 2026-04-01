@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 from flask import Flask, jsonify, request
 from typing import Dict, Any, Optional
+import requests
 
 # Configurazione logging
 logging.basicConfig(level=logging.INFO)
@@ -182,6 +183,14 @@ def start_server(port: int = 5000, threaded: bool = True) -> bool:
             )
             _server_thread.start()
             logger.info(f"Server keep-alive avviato in background sulla porta {port}")
+            
+            # Avvia health check thread per monitorare il server
+            health_thread = threading.Thread(
+                target=_health_check_loop,
+                args=(port,),
+                daemon=True
+            )
+            health_thread.start()
         else:
             # Avvia bloccante
             _run_server(port)
@@ -192,6 +201,54 @@ def start_server(port: int = 5000, threaded: bool = True) -> bool:
     except Exception as e:
         logger.error(f"Errore nell'avvio del server: {e}")
         return False
+
+
+def _health_check_loop(port: int):
+    """
+    Thread che monitora lo stato del server e lo riavvia se necessario.
+    """
+    while _is_running:
+        try:
+            # Verifica che il server Flask risponda
+            # Prova a fare una richiesta a localhost
+            try:
+                response = requests.get(f"http://localhost:{port}/health", timeout=2)
+                if response.status_code != 200:
+                    logger.warning("Health check fallito, riavvio server...")
+                    _restart_server(port)
+            except requests.exceptions.RequestException:
+                logger.warning("Health check fallito (connessione rifiutata), riavvio server...")
+                _restart_server(port)
+        except Exception as e:
+            logger.error(f"Errore health check: {e}")
+        
+        # Aspetta 60 secondi prima del prossimo check
+        time.sleep(60)
+
+
+def _restart_server(port: int):
+    """
+    Riavvia il server Flask.
+    """
+    global _is_running, _server_thread
+    
+    logger.info("Riavvio server keep-alive...")
+    _is_running = False
+    
+    #少量的 attesa per il thread precedente
+    time.sleep(2)
+    
+    # Riavvia il server
+    _server_thread = threading.Thread(
+        target=_run_server,
+        args=(port,),
+        daemon=True
+    )
+    _server_thread.start()
+    _is_running = True
+    _start_time = time.time()
+    stats["start_time"] = datetime.utcnow().isoformat()
+    logger.info("Server keep-alive riavviato con successo")
 
 
 def _run_server(port: int):
