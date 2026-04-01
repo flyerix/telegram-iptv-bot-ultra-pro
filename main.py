@@ -66,8 +66,8 @@ logger = logging.getLogger(__name__)
 # Variabili globali
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_IDS = [int(x.strip()) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
-KEEPALIVE_PORT = int(os.environ.get("KEEPALIVE_PORT", "8080"))
-KEEPALIVE_HOST = os.environ.get("KEEPALIVE_HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORT", "8080"))
+HOST = os.environ.get("HOST", "0.0.0.0")
 
 # Timeout configuration per il polling (secondi)
 POLLING_TIMEOUT = float(os.environ.get("POLLING_TIMEOUT", "10"))
@@ -1657,8 +1657,8 @@ async def post_init(application: Application):
     
     # Avvia keep-alive server in background
     try:
-        start_keepalive(KEEPALIVE_PORT, KEEPALIVE_HOST)
-        logger.info(f"Keep-alive server avviato su {KEEPALIVE_HOST}:{KEEPALIVE_PORT}")
+        start_keepalive(PORT)
+        logger.info(f"Keep-alive server avviato su {HOST}:{PORT}")
     except Exception as e:
         logger.error(f"Errore avvio keep-alive: {e}")
 
@@ -1689,7 +1689,7 @@ def main():
         print("\n⚠️ Per favore configura le variabili d'ambiente:")
         print("   - TELEGRAM_BOT_TOKEN: Il token del tuo bot Telegram")
         print("   - ADMIN_IDS: ID Telegram degli admin separati da virgola")
-        print("   - KEEPALIVE_PORT: Porta per il server keep-alive (default: 8080)")
+        print("   - PORT: Porta per il server HTTP (default: 8080, standard Render)")
         sys.exit(1)
     
     # Inizializza persistenza
@@ -1739,7 +1739,7 @@ def main():
     print("=" * 50)
     print(f"🤖 Bot token: {BOT_TOKEN[:10]}...")
     print(f"👮 Admin IDs: {ADMIN_IDS}")
-    print(f"🌐 Keep-alive: {KEEPALIVE_HOST}:{KEEPALIVE_PORT}")
+    print(f"🌐 Keep-alive: {HOST}:{PORT}")
     print("=" * 50)
     
     # Avvia polling con gestione errori e restart automatico

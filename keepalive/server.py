@@ -153,17 +153,21 @@ def _get_bot_status() -> Dict[str, Any]:
     return status
 
 
-def start_server(port: int = 5000, threaded: bool = True) -> bool:
+def start_server(port: int = None, threaded: bool = True) -> bool:
     """
     Avvia il server keep-alive
     
     Args:
-        port: Porta su cui eseguire il server (default 5000)
+        port: Porta su cui eseguire il server (default: PORT env o 8080)
         threaded: Se True, esegue il server in un thread separato
     
     Returns:
         True se il server è stato avviato con successo
     """
+    # Leggi la variabile d'ambiente PORT (standard Render.com)
+    import os
+    if port is None:
+        port = int(os.environ.get("PORT", os.environ.get("KEEPALIVE_PORT", "8080")))
     global _server, _server_thread, _is_running, _start_time
     
     if _is_running:
