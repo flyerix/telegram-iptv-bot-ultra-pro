@@ -701,6 +701,16 @@ class StatisticheDashboard:
         
         return "\n".join(lines)
     
+    def genera_report_completo(self) -> str:
+        """
+        Genera un report completo delle statistiche.
+        Metodo alias per genera_report() per compatibilità con il menu admin.
+        
+        Returns:
+            Stringa formattata con il report completo
+        """
+        return self.genera_report()
+    
     # ==================== METODI AGGIUNTIVI ====================
     
     def genera_grafico_categorie(self, titolo: str, categorie: Dict[str, int], 

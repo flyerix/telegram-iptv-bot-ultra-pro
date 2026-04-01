@@ -562,6 +562,15 @@ class UserManagement:
             logger.error(f"Errore nel recupero delle richieste pendenti: {e}")
             return []
     
+    def get_richieste_in_attesa(self) -> List[Dict[str, Any]]:
+        """
+        Ottiene le richieste in attesa dalla lista richieste.
+        
+        Returns:
+            Lista di dizionari con i dati delle richieste in attesa
+        """
+        return self.get_richieste_pendenti()
+    
     def get_richieste_utente(self, user_id: str) -> List[Dict[str, Any]]:
         """
         Ottiene la lista delle richieste di un utente.
