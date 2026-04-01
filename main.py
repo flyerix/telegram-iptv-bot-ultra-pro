@@ -87,6 +87,9 @@ app = None
 # ==================== COSTANTI ====================
 
 # Stati per ConversationHandler
+# Stati per ticket (nuovo ConversationHandler)
+SELECT_PRIORITY, ENTER_DESCRIPTION, ENTER_LIST_NAME, CONFIRM = range(4)
+# Stati esistenti
 (
     STATE_START,
     STATE_TICKET_CREATE,
@@ -95,13 +98,15 @@ app = None
     STATE_ONBOARDING,
     STATE_FAQ_CATEGORIA,
     STATE_FAQ_RISPOSTA,
-) = range(7)
+) = range(7, 14)
 
 # Callback data prefixes
 CB_FAQ = "faq_"
 CB_ONBOARDING = "onb_"
 CB_MENU = "menu_"
 CB_TICKET = "ticket_"
+CB_TICKET_USE_LIST = "ticket_use_list_"
+CB_TICKET_OTHER_LIST = "ticket_other_list_"
 CB_ADMIN = "admin_"
 CB_STATO = "stato_"
 CB_RICHIESTA = "richiesta_"
@@ -851,37 +856,131 @@ async def handle_callback_ticket(update: Update, context: ContextTypes.DEFAULT_T
     user_id = str(update.effective_user.id)
     
     if data == f"{CB_TICKET}create":
-        # Mostra form creazione ticket
+        # Mostra form creazione ticket - avvia ConversationHandler
         keyboard = [
             [
                 InlineKeyboardButton("🔴 Alta", callback_data=f"{CB_TICKET}priorita_alta"),
                 InlineKeyboardButton("🟡 Media", callback_data=f"{CB_TICKET}priorita_media"),
                 InlineKeyboardButton("🟢 Bassa", callback_data=f"{CB_TICKET}priorita_bassa")
+            ],
+            [
+                InlineKeyboardButton("❌ Annulla", callback_data=f"{CB_TICKET}annulla")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            "🎫 <b>Seleziona priorità</b>\n\n"
-            "Alta: Problemi gravi, servizio non funzionante\n"
-            "Media: Problemi minori, rallentamenti\n"
-            "Bassa: Domande, informazioni",
+            "🎫 <b>Creazione Ticket</b>\n\n"
+            "Seleziona la priorità del ticket:\n\n"
+            "🔴 Alta: Problemi gravi, servizio non funzionante\n"
+            "🟡 Media: Problemi minori, rallentamenti\n"
+            "🟢 Bassa: Domande, informazioni",
             reply_markup=reply_markup,
             parse_mode=constants.ParseMode.HTML
         )
+        return SELECT_PRIORITY
     
     elif data.startswith(f"{CB_TICKET}priorita_"):
-        # Salva priorità e chiedi descrizione
+        # Salva priorità e passa al prossimo step
         priorita = data.replace(f"{CB_TICKET}priorita_", "")
+        
+        # Salva nei user_data
+        context.user_data["ticket_priorita"] = priorita
         
         await query.edit_message_text(
             f"🎫 <b>Ticket priorità {priorita.upper()}</b>\n\n"
             "Descrivi il tuo problema in dettaglio:",
             parse_mode=constants.ParseMode.HTML
         )
+        return ENTER_DESCRIPTION
+    
+    elif data == f"{CB_TICKET}annulla":
+        # Annulla creazione ticket
+        await query.edit_message_text(
+            "❌ Creazione ticket annullata.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        return ConversationHandler.END
+    
+    elif data.startswith(f"{CB_TICKET_USE_LIST}"):
+        # Usa la lista esistente dell'utente
+        lista_nome = data.replace(f"{CB_TICKET_USE_LIST}", "")
+        context.user_data["ticket_lista"] = lista_nome
         
-        # TODO: Gestire la creazione del ticket con ConversationHandler
-        return STATE_TICKET_CREATE
+        # Mostra schermata di conferma
+        priorita = context.user_data.get("ticket_priorita", "media")
+        descrizione = context.user_data.get("ticket_descrizione", "")
+        
+        text = (f"🎫 <b>Conferma Ticket</b>\n\n"
+                f"⚡ <b>Priorità:</b> {priorita.upper()}\n"
+                f"📺 <b>Lista IPTV:</b> {lista_nome}\n\n"
+                f"📝 <b>Descrizione:</b>\n{descrizione}")
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Conferma", callback_data=f"{CB_TICKET}conferma"),
+                InlineKeyboardButton("❌ Annulla", callback_data=f"{CB_TICKET}annulla")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+        return CONFIRM
+    
+    elif data == f"{CB_TICKET_OTHER_LIST}":
+        # L'utente vuole inserire un'altra lista
+        await query.edit_message_text(
+            "📺 <b>Inserisci nome lista IPTV</b>\n\n"
+            "Inserisci il nome della lista IPTV per cui hai bisogno di supporto:",
+            parse_mode=constants.ParseMode.HTML
+        )
+        return ENTER_LIST_NAME
+    
+    elif data == f"{CB_TICKET}conferma":
+        # Crea il ticket
+        priorita = context.user_data.get("ticket_priorita", "media")
+        descrizione = context.user_data.get("ticket_descrizione", "")
+        lista = context.user_data.get("ticket_lista", "Non specificata")
+        
+        # Crea il ticket
+        try:
+            ticket = ticket_system.crea_ticket(
+                user_id=user_id,
+                problema=f"[{lista}] {descrizione}",
+                categoria=priorita
+            )
+            
+            if ticket:
+                await query.edit_message_text(
+                    f"✅ <b>Ticket creato con successo!</b>\n\n"
+                    f"🎫 <b>Ticket #{ticket.get('id', '')[:8]}</b>\n"
+                    f"📊 Stato: {ticket.get('stato', 'Aperto')}\n"
+                    f"⚡ Priorità: {priorita.upper()}\n\n"
+                    "Un admin ti risponderà al più presto.",
+                    parse_mode=constants.ParseMode.HTML
+                )
+            else:
+                await query.edit_message_text(
+                    "❌ Errore nella creazione del ticket. Riprova.",
+                    parse_mode=constants.ParseMode.HTML
+                )
+        except Exception as e:
+            logger.error(f"Errore creazione ticket: {e}")
+            await query.edit_message_text(
+                "❌ Errore nella creazione del ticket. Riprova.",
+                parse_mode=constants.ParseMode.HTML
+            )
+        
+        # Pulisci i dati utente
+        context.user_data.pop("ticket_priorita", None)
+        context.user_data.pop("ticket_descrizione", None)
+        context.user_data.pop("ticket_lista", None)
+        
+        return ConversationHandler.END
     
     elif data.startswith(f"{CB_TICKET}view_"):
         ticket_id = data.replace(f"{CB_TICKET}view_", "")
@@ -907,6 +1006,208 @@ async def handle_callback_ticket(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=reply_markup,
             parse_mode=constants.ParseMode.HTML
         )
+
+
+# ==================== CONVERSATION HANDLER PER TICKET ====================
+
+async def ticket_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point per la creazione ticket - mostra la selezione priorità."""
+    keyboard = [
+        [
+            InlineKeyboardButton("🔴 Alta", callback_data=f"{CB_TICKET}priorita_alta"),
+            InlineKeyboardButton("🟡 Media", callback_data=f"{CB_TICKET}priorita_media"),
+            InlineKeyboardButton("🟢 Bassa", callback_data=f"{CB_TICKET}priorita_bassa")
+        ],
+        [
+            InlineKeyboardButton("❌ Annulla", callback_data=f"{CB_TICKET}annulla")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🎫 <b>Creazione Ticket</b>\n\n"
+        "Seleziona la priorità del ticket:\n\n"
+        "🔴 Alta: Problemi gravi, servizio non funzionante\n"
+        "🟡 Media: Problemi minori, rallentamenti\n"
+        "🟢 Bassa: Domande, informazioni",
+        reply_markup=reply_markup,
+        parse_mode=constants.ParseMode.HTML
+    )
+    return SELECT_PRIORITY
+
+
+async def ticket_receive_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Riceve la descrizione del problema e chiede il nome lista."""
+    user_id = str(update.effective_user.id)
+    descrizione = update.message.text
+    
+    # Salva la descrizione
+    context.user_data["ticket_descrizione"] = descrizione
+    
+    # Controlla se l'utente ha una lista associata
+    lista = user_management.get_lista_utente(user_id)
+    
+    if lista:
+        # L'utente ha una lista - chiedi se vuole usarla o inserirne un'altra
+        lista_nome = lista.get("nome", "la tua lista")
+        
+        keyboard = [
+            [
+                InlineKeyboardButton(f"📺 Usa la tua lista: {lista_nome}", 
+                                    callback_data=f"{CB_TICKET_USE_LIST}{lista_nome}")
+            ],
+            [
+                InlineKeyboardButton("📝 Inserisci un'altra lista", 
+                                    callback_data=f"{CB_TICKET_OTHER_LIST}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"📺 <b>Lista IPTV</b>\n\n"
+            f"Hai una lista associata: <b>{lista_nome}</b>\n\n"
+            "Vuoi usare questa lista per il ticket o inserirne un'altra?",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    else:
+        # L'utente non ha una lista - chiedi direttamente il nome
+        await update.message.reply_text(
+            "📺 <b>Inserisci nome lista IPTV</b>\n\n"
+            "Non hai una lista IPTV associata. "
+            "Inserisci il nome della lista IPTV per cui hai bisogno di supporto:",
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    return ENTER_LIST_NAME
+
+
+async def ticket_receive_list_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Riceve il nome della lista IPTV e mostra la conferma."""
+    lista_nome = update.message.text
+    context.user_data["ticket_lista"] = lista_nome
+    
+    priorita = context.user_data.get("ticket_priorita", "media")
+    descrizione = context.user_data.get("ticket_descrizione", "")
+    
+    text = (f"🎫 <b>Conferma Ticket</b>\n\n"
+            f"⚡ <b>Priorità:</b> {priorita.upper()}\n"
+            f"📺 <b>Lista IPTV:</b> {lista_nome}\n\n"
+            f"📝 <b>Descrizione:</b>\n{descrizione}")
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Conferma", callback_data=f"{CB_TICKET}conferma"),
+            InlineKeyboardButton("❌ Annulla", callback_data=f"{CB_TICKET}annulla")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=reply_markup,
+        parse_mode=constants.ParseMode.HTML
+    )
+    return CONFIRM
+
+
+async def ticket_confirm_and_create(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Conferma e crea il ticket."""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(update.effective_user.id)
+    priorita = context.user_data.get("ticket_priorita", "media")
+    descrizione = context.user_data.get("ticket_descrizione", "")
+    lista = context.user_data.get("ticket_lista", "Non specificata")
+    
+    # Crea il ticket
+    try:
+        ticket = ticket_system.crea_ticket(
+            user_id=user_id,
+            problema=f"[{lista}] {descrizione}",
+            categoria=priorita
+        )
+        
+        if ticket:
+            await query.edit_message_text(
+                f"✅ <b>Ticket creato con successo!</b>\n\n"
+                f"🎫 <b>Ticket #{ticket.get('id', '')[:8]}</b>\n"
+                f"📊 Stato: {ticket.get('stato', 'Aperto')}\n"
+                f"⚡ Priorità: {priorita.upper()}\n\n"
+                "Un admin ti risponderà al più presto.",
+                parse_mode=constants.ParseMode.HTML
+            )
+        else:
+            await query.edit_message_text(
+                "❌ Errore nella creazione del ticket. Riprova.",
+                parse_mode=constants.ParseMode.HTML
+            )
+    except Exception as e:
+        logger.error(f"Errore creazione ticket: {e}")
+        await query.edit_message_text(
+            "❌ Errore nella creazione del ticket. Riprova.",
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    # Pulisci i dati utente
+    context.user_data.pop("ticket_priorita", None)
+    context.user_data.pop("ticket_descrizione", None)
+    context.user_data.pop("ticket_lista", None)
+    
+    return ConversationHandler.END
+
+
+async def ticket_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Annulla la creazione del ticket."""
+    # Prova a rispondere tramite message (se chiamato da /ticket)
+    if update.message:
+        await update.message.reply_text(
+            "❌ Creazione ticket annullata.",
+            parse_mode=constants.ParseMode.HTML
+        )
+    # Prova a rispondere tramite callback query (se chiamato da menu)
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(
+            "❌ Creazione ticket annullata.",
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    # Pulisci i dati utente
+    context.user_data.pop("ticket_priorita", None)
+    context.user_data.pop("ticket_descrizione", None)
+    context.user_data.pop("ticket_lista", None)
+    
+    return ConversationHandler.END
+
+
+# Crea il ConversationHandler per i ticket
+ticket_conversation_handler = ConversationHandler(
+    entry_points=[CommandHandler("ticket", ticket_entry_point)],
+    states={
+        SELECT_PRIORITY: [
+            CallbackQueryHandler(handle_callback_ticket, pattern=f"^{CB_TICKET}priorita_")
+        ],
+        ENTER_DESCRIPTION: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, ticket_receive_description)
+        ],
+        ENTER_LIST_NAME: [
+            CallbackQueryHandler(handle_callback_ticket, pattern=f"^{CB_TICKET_USE_LIST}"),
+            CallbackQueryHandler(handle_callback_ticket, pattern=f"^{CB_TICKET_OTHER_LIST}"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, ticket_receive_list_name)
+        ],
+        CONFIRM: [
+            CallbackQueryHandler(ticket_confirm_and_create, pattern=f"^{CB_TICKET}conferma"),
+            CallbackQueryHandler(ticket_cancel, pattern=f"^{CB_TICKET}annulla")
+        ]
+    },
+    fallbacks=[
+        CommandHandler("cancel", ticket_cancel)
+    ],
+    name="ticket_conversation",
+    persistent=False
+)
 
 
 async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1219,11 +1520,13 @@ async def job_pulizia_dati(context: ContextTypes.DEFAULT_TYPE):
 def setup_handlers(application: Application):
     """Configura tutti gli handler del bot."""
     
+    # ConversationHandler per ticket (deve essere aggiunto prima dei CommandHandler)
+    application.add_handler(ticket_conversation_handler)
+    
     # Comandi utente
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("faq", cmd_faq))
-    application.add_handler(CommandHandler("ticket", cmd_ticket))
     application.add_handler(CommandHandler("miei_ticket", cmd_miei_ticket))
     application.add_handler(CommandHandler("stato", cmd_stato))
     application.add_handler(CommandHandler("richiedi", cmd_richiedi))
