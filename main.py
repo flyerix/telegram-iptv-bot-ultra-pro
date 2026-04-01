@@ -246,7 +246,10 @@ async def mostra_menu_principale(update: Update, context: ContextTypes.DEFAULT_T
         f"• 📊 Stato del servizio\n\n"
         f"Cosa vuoi fare?")
     
-    if edit and query:
+    if query is not None:
+        # È stato chiamato da un callback handler
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
+    elif edit and query is not None:
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
     else:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
@@ -743,6 +746,11 @@ async def handle_callback_faq(update: Update, context: ContextTypes.DEFAULT_TYPE
                 InlineKeyboardButton(cat_nome, callback_data=f"{CB_FAQ}categoria_{cat_id}")
             ])
         
+        # Aggiungi pulsante Menu Principale
+        keyboard.append([
+            InlineKeyboardButton("🏠 Menu Principale", callback_data=f"{CB_MENU}main")
+        ])
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             "❓ <b>Scegli una categoria FAQ:</b>",
@@ -772,6 +780,11 @@ async def handle_callback_faq(update: Update, context: ContextTypes.DEFAULT_TYPE
             InlineKeyboardButton("🔙 Torna alle categorie", callback_data=f"{CB_FAQ}categorie")
         ])
         
+        # Aggiungi pulsante Menu Principale
+        keyboard.append([
+            InlineKeyboardButton("🏠 Menu Principale", callback_data=f"{CB_MENU}main")
+        ])
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         cat_nome = FaqSystem.CATEGORIE.get(cat_id, cat_id)
@@ -792,7 +805,8 @@ async def handle_callback_faq(update: Update, context: ContextTypes.DEFAULT_TYPE
         text = f"❓ <b>{faq.get('domanda')}</b>\n\n{faq.get('risposta')}"
         
         keyboard = [
-            [InlineKeyboardButton("🔙 Torna alle FAQ", callback_data=f"{CB_FAQ}categorie")]
+            [InlineKeyboardButton("🔙 Torna alle FAQ", callback_data=f"{CB_FAQ}categorie")],
+            [InlineKeyboardButton("🏠 Menu Principale", callback_data=f"{CB_MENU}main")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -1180,6 +1194,9 @@ async def ticket_confirm_and_create(update: Update, context: ContextTypes.DEFAUL
         )
         
         if ticket:
+            # Notifica agli admin
+            await notifica_admin_ticket(ticket)
+            
             await query.edit_message_text(
                 f"✅ <b>Ticket creato con successo!</b>\n\n"
                 f"🎫 <b>Ticket #{ticket.get('id', '')[:8]}</b>\n"
@@ -1394,7 +1411,7 @@ async def handle_callback_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     
     if data == f"{CB_MENU}main":
         # Torna al menu principale
-        await mostra_menu_principale(update, context)
+        await mostra_menu_principale(update, context, query=query)
         
     elif data == f"{CB_MENU}stato":
         # Mostra stato utente
