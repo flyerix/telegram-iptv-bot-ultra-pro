@@ -8,6 +8,7 @@ import logging
 import time
 import json
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, request, Response
 from typing import Dict, Any, Optional
 import requests
@@ -221,21 +222,27 @@ def webhook():
         update = Update.de_json(update_data, _bot_application.bot)
         
         # Processa l'update usando l'application
-        # Usiamo un async executor per gestire le coroutine
-        async def process_update():
-            await _bot_application.process_update(update)
-        
-        # Esegui in modo sincrono usando asyncio
+        # Usiamo un executor per gestire le coroutine in modo sicuro
         import asyncio
-        try:
-            # Prova a ottenere il loop esistente
-            loop = asyncio.get_running_loop()
-            # Se siamo in un loop esistente (thread principale), creiamo un task
-            # e ritorniamo immediatamente - il task verrà processato
-            asyncio.create_task(process_update())
-        except RuntimeError:
-            # Nessun loop in questo thread - creane uno nuovo
-            asyncio.run(process_update())
+        from concurrent.futures import ThreadPoolExecutor
+        
+        def run_async_process():
+            """Esegui la coroutine in un nuovo event loop"""
+            try:
+                # Crea un nuovo event loop per questo thread
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    new_loop.run_until_complete(_bot_application.process_update(update))
+                finally:
+                    new_loop.close()
+            except Exception as e:
+                logger.error(f"Errore nell'elaborazione async: {e}")
+        
+        # Esegui in un thread pool per evitare problemi con l'event loop
+        executor = ThreadPoolExecutor(max_workers=1)
+        executor.submit(run_async_process)
+        executor.shutdown(wait=False)
         
         return Response(status=200)
         

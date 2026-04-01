@@ -43,7 +43,9 @@ class DataPersistence:
         "ticket": {},
         "rate_limits": {},
         "impostazioni": {},
-        "stato_servizio": {}
+        "stato_servizio": {},
+        "manutenzione": {},
+        "faq": {}
     }
     
     def __init__(self, data_dir: Union[str, Path] = DATA_DIR, 
