@@ -6,10 +6,15 @@ Mantiene il bot online 24/7 con un server HTTP leggero
 import threading
 import logging
 import time
+import json
 from datetime import datetime
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from typing import Dict, Any, Optional
 import requests
+
+# Variabile globale per l'application del bot (usata per webhook)
+_bot_application = None
+_webhook_secret_token = None
 
 # Configurazione logging
 logging.basicConfig(level=logging.INFO)
@@ -151,6 +156,92 @@ def _get_bot_status() -> Dict[str, Any]:
         pass
     
     return status
+
+
+def set_bot_application(application):
+    """
+    Imposta l'application del bot per il webhook
+    
+    Args:
+        application: Application di telegram.ext
+    """
+    global _bot_application
+    _bot_application = application
+    logger.info("Application del bot impostata per il webhook")
+
+
+def set_webhook_secret(secret_token: str):
+    """
+    Imposta il token segreto per la verifica del webhook
+    
+    Args:
+        secret_token: Token segreto per autenticare le richieste
+    """
+    global _webhook_secret_token
+    _webhook_secret_token = secret_token
+    logger.info("Token segreto per webhook configurato")
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """
+    Endpoint webhook per ricevere update da Telegram
+    """
+    global _bot_application
+    
+    stats["requests"] += 1
+    
+    # Verifica che l'application sia configurata
+    if _bot_application is None:
+        logger.error("Application non configurata per webhook")
+        return jsonify({"error": "Bot not configured"}), 500
+    
+    # Verifica il token segreto (se configurato)
+    if _webhook_secret_token:
+        secret_header = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
+        if secret_header != _webhook_secret_token:
+            logger.warning("Token segreto non valido per webhook")
+            return jsonify({"error": "Unauthorized"}), 401
+    
+    try:
+        # Parse del JSON ricevuto
+        update_data = request.get_json()
+        
+        if not update_data:
+            logger.warning("Nessun dato JSON ricevuto nel webhook")
+            return jsonify({"error": "No data"}), 400
+        
+        logger.debug(f"Update ricevuta: {update_data.get('update_id', 'N/A')}")
+        
+        # Crea l'oggetto Update da Telegram
+        from telegram import Update
+        from telegram.ext import Application
+        
+        # Crea l'update manualmente
+        update = Update.de_json(update_data, _bot_application.bot)
+        
+        # Processa l'update usando l'application
+        # Usiamo un async executor per gestire le coroutine
+        async def process_update():
+            await _bot_application.process_update(update)
+        
+        # Esegui in modo sincrono usando asyncio
+        import asyncio
+        try:
+            # Prova a ottenere il loop esistente
+            loop = asyncio.get_running_loop()
+            # Se siamo in un loop esistente (thread principale), creiamo un task
+            # e ritorniamo immediatamente - il task verrà processato
+            asyncio.create_task(process_update())
+        except RuntimeError:
+            # Nessun loop in questo thread - creane uno nuovo
+            asyncio.run(process_update())
+        
+        return Response(status=200)
+        
+    except Exception as e:
+        logger.error(f"Errore nel processing del webhook: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 def start_server(port: int = None, threaded: bool = True) -> bool:

@@ -52,7 +52,7 @@ from modules.notifications import NotificationSystem, TipoNotifica
 from modules.statistiche import StatisticheDashboard
 
 # Import keep-alive server
-from keepalive.server import start_server as start_keepalive
+from keepalive.server import start_server as start_keepalive, set_bot_application
 
 # ==================== CONFIGURAZIONE ====================
 
@@ -172,6 +172,47 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
 
 # Registra l'handler globale
 sys.excepthook = global_exception_handler
+
+
+# ==================== CONFIGURAZIONE WEBHOOK ====================
+
+
+async def setup_webhook(application: Application):
+    """
+    Configura il webhook con Telegram.
+    
+    Args:
+        application: Application del bot Telegram
+    """
+    from telegram.error import TelegramError
+    
+    # Costruisci l'URL del webhook
+    webhook_url = os.environ.get("WEBHOOK_URL", f"https://{os.environ.get('RENDER_SERVICE_NAME', 'helperbot')}.onrender.com/webhook")
+    
+    # Token segreto opzionale per sicurezza aggiuntiva
+    webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
+    if webhook_secret:
+        from keepalive.server import set_webhook_secret
+        set_webhook_secret(webhook_secret)
+    
+    try:
+        # Rimuovi qualsiasi webhook esistente prima di configurarne uno nuovo
+        logger.info("Rimuovo webhook esistente...")
+        await application.bot.delete_webhook()
+        
+        # Configura il nuovo webhook
+        logger.info(f"Configuro webhook: {webhook_url}")
+        await application.bot.set_webhook(
+            url=webhook_url,
+            secret_token=webhook_secret if webhook_secret else None,
+            allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
+        )
+        
+        logger.info("Webhook configurato con successo!")
+        
+    except TelegramError as e:
+        logger.error(f"Errore nella configurazione del webhook: {e}")
+        raise
 
 
 # ==================== MIDDLEWARE ====================
@@ -1655,6 +1696,12 @@ async def post_init(application: Application):
     """Called after initialization."""
     logger.info("Bot inizializzato con successo!")
     
+    # Passa l'application al server per il webhook
+    set_bot_application(application)
+    
+    # Configura il webhook con Telegram
+    await setup_webhook(application)
+    
     # Avvia keep-alive server in background
     try:
         start_keepalive(PORT)
@@ -1739,42 +1786,19 @@ def main():
     print("=" * 50)
     print(f"🤖 Bot token: {BOT_TOKEN[:10]}...")
     print(f"👮 Admin IDs: {ADMIN_IDS}")
-    print(f"🌐 Keep-alive: {HOST}:{PORT}")
+    print(f"🌐 Webhook URL: {os.environ.get('WEBHOOK_URL', 'non configurato')}")
     print("=" * 50)
     
-    # Avvia polling con gestione errori e restart automatico
+    # Con webhook non usiamo run_polling() - il bot riceve update dal server Flask
+    # Il server Flask è già avviato in post_init
+    # Mantieniamo il processo in vita
+    logger.info("Bot in esecuzione in modalità webhook...")
+    
+    import time
+    # Loop infinito per mantenere il processo in vita
+    # Il server Flask gestirà le richieste in entrata
     while True:
-        try:
-            logger.info("Avvio polling...")
-            app.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True
-            )
-        except Exception as e:
-            logger.error(f"Errore nel polling: {e}")
-            global _restart_attempts, _last_restart_time
-            
-            from datetime import datetime
-            current_time = datetime.now()
-            
-            # Reset contatori se è passato più di 5 minuti
-            if _last_restart_time and (current_time - _last_restart_time).total_seconds() > 300:
-                _restart_attempts = 0
-            
-            if _restart_attempts < MAX_RESTART_ATTEMPTS:
-                _restart_attempts += 1
-                _last_restart_time = current_time
-                
-                logger.info(f"Restart polling tentativo {_restart_attempts}/{MAX_RESTART_ATTEMPTS}...")
-                
-                # Delay crescente (exponential backoff)
-                delay = RESTART_DELAY * (2 ** (_restart_attempts - 1))
-                logger.info(f"Attesa {delay} secondi prima del restart...")
-                import time
-                time.sleep(delay)
-            else:
-                logger.critical("Raggiunto numero massimo tentativi. Arresto bot.")
-                break
+        time.sleep(60)
 
 
 if __name__ == "__main__":
