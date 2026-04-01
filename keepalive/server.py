@@ -251,7 +251,7 @@ def webhook():
         return jsonify({"error": str(e)}), 500
 
 
-def start_server(port: int = None, threaded: bool = True) -> bool:
+def start_server(port: int = None, threaded: bool = False) -> bool:
     """
     Avvia il server keep-alive
     
@@ -374,11 +374,11 @@ def _run_server(port: int):
     global _server
     try:
         logger.info(f"Tentativo di avvio server Flask su porta {port}")
-        # Usa threaded=True per gestire più richieste
+        # threading=False per esecuzione bloccante - necessario per Render.com port detection
         app.run(
             host='0.0.0.0',
             port=port,
-            threaded=True,
+            threaded=False,
             debug=False,
             use_reloader=False,  # Disabilita il reloader per evitare doppie istanze
             log_level=logging.INFO  # Assicura che il log di Flask sia visibile
