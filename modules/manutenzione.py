@@ -156,7 +156,7 @@ class Manutenzione:
         # Aggiungi alla whitelist del rate limiter se disponibile
         if self.rate_limiter:
             try:
-                self.rate_limiter.whitelist_user(admin_id)
+                self.rate_limiter.aggiungi_whitelist(admin_id)
             except Exception as e:
                 logger.warning(f"Errore nell'aggiungere admin alla whitelist rate limiter: {e}")
         
@@ -186,7 +186,7 @@ class Manutenzione:
         # Rimuovi dalla whitelist del rate limiter se disponibile
         if self.rate_limiter:
             try:
-                self.rate_limiter.remove_whitelist(admin_id)
+                self.rate_limiter.rimuovi_whitelist(admin_id)
             except Exception as e:
                 logger.warning(f"Errore nel rimuovere admin dalla whitelist rate limiter: {e}")
         

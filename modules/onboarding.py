@@ -571,7 +571,7 @@ def inizia_onboarding(user_id: str, username: str, nome: str) -> Tuple[str, Dict
     """
     # Questa funzione richiede un'istanza di OnboardingManager
     # Per retrocompatibilità, crea una funzione wrapper
-    raise NotImplementedError("Utilizzare la classe OnboardingManager")
+    pass
 
 
 # Esporta le classi e costanti principali

@@ -145,7 +145,7 @@ async def rate_limit_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Verifica rate limit per l'utente."""
     user_id = str(update.effective_user.id if update.effective_user else 0)
     
-    if not rate_limiter.check_rate_limit(user_id):
+    if not rate_limiter.check_rate_limit(user_id, "comando"):
         # Limite superato
         if update.message:
             await update.message.reply_text(
@@ -328,8 +328,8 @@ async def cmd_stato(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Ottieni stato servizio
-    stato = stato_servizio.get_stato_corrente()
-    problemi = stato_servizio.get_problemi()
+    stato = stato_servizio.get_stato()
+    problemi = stato_servizio.get_problemi_attivi()
     
     # Determina emoji stato
     if stato == STATO_OPERATIVO:
@@ -348,9 +348,9 @@ async def cmd_stato(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"• {p.get('descrizione', '')}\n"
     
     # Aggiungi statistiche
-    stats = stato_servizio.get_statistiche()
-    if stats:
-        uptime = stats.get("ultimo_riavvio", "N/A")
+    info = stato_servizio.get_info_completa()
+    if info:
+        uptime = info.get("ultimo_riavvio", "N/A")
         text += f"\n⏱️ <b>Ultimo riavvio:</b> {uptime}"
     
     await update.message.reply_text(text, parse_mode=constants.ParseMode.HTML)

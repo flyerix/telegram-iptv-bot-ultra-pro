@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Optional
 from queue import Queue
 import threading
-from logging.handlers import RotatingFileHandler
 
 # Configurazione globale
 LOG_DIR = Path("logs")
@@ -126,15 +125,6 @@ class LoggerManager:
         
         # Handler asincrono
         async_handler = AsyncLogHandler(self.queue)
-        async_handler.setFormatter(self.formatter)
-        
-        # Aggiungi attributo custom per il tipo di log
-        class LogRecord(logging.LogRecord):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self.log_type = log_type
-        
-        async_handler.setFormatter(self.formatter)
         
         # Salva riferimenti
         self.loggers[log_type] = logger

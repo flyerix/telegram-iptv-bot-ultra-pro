@@ -621,7 +621,7 @@ class RateLimiter:
             
             # Pulisci cooldown scaduti
             if user_data.in_cooldown and user_data.cooldown_fine:
-                fine = self._parse_timestamp(user_data.blacklist_fine)
+                fine = self._parse_timestamp(user_data.cooldown_fine)
                 if fine and fine <= now:
                     user_data.in_cooldown = False
                     user_data.cooldown_fine = None

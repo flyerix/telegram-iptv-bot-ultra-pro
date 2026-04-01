@@ -195,6 +195,7 @@ class TicketSystem:
             nuovo_ticket = {
                 "id": ticket_id,
                 "user_id": user_id,
+                "titolo": problema[:50],
                 "problema": problema,
                 "categoria": categoria_valida,
                 "priorità": priorità,

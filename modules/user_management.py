@@ -446,7 +446,7 @@ class UserManagement:
     
     # ==================== GESTIONE RICHIESTE ====================
     
-    def crea_richiesta(self, user_id: str, nome_lista: str) -> Dict[str, Any]:
+    def crea_richiesta(self, user_id: str, username: str = "", nome_lista: str = "") -> Dict[str, Any]:
         """
         Crea una nuova richiesta di lista IPTV.
         
