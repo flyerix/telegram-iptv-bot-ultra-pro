@@ -1855,33 +1855,37 @@ def run_bot():
     print("=" * 50)
     
     # =====================================================
-    # AVVIO DEL BOT CON KEEP-ALIVE SERVER
-    # Il server keep-alive gestisce direttamente le richieste webhook
+    # AVVIO DEL BOT CON WEBHOOK PTB
+    # Usa il metodo integrato di PTB che gestisce:
+    # 1. Server HTTP
+    # 2. Webhook con Telegram
+    # 3. Processing degli update
     # =====================================================
     
-    logger.info("=== STARTING BOT WITH KEEP-ALIVE SERVER ===")
+    logger.info("=== STARTING BOT WITH WEBHOOK ===")
     
-    # Avvia il server keep-alive PRIMA di avviare il bot
-    # threaded=True per non bloccare il main thread
-    logger.info(f"Avviando keep-alive server sulla porta {PORT}...")
-    keepalive_started = start_keepalive(port=PORT, threaded=True)
+    # Costruisci l'URL del webhook per Telegram
+    render_service_name = os.environ.get('RENDER_SERVICE_NAME', '')
+    webhook_url_env = os.environ.get("WEBHOOK_URL")
     
-    if not keepalive_started:
-        logger.error("ERRORE nell'avvio del server keep-alive!")
-        print("❌ Errore nell'avvio del server keep-alive!")
-        sys.exit(1)
+    if webhook_url_env:
+        webhook_url_for_telegram = webhook_url_env
+    elif render_service_name:
+        webhook_url_for_telegram = f"https://{render_service_name}.onrender.com/webhook"
+    else:
+        webhook_url_for_telegram = "https://telegram-iptv-bot-ultra-pro.onrender.com/webhook"
     
-    print(f"✅ Server keep-alive avviato sulla porta {PORT}")
+    logger.info(f"=== WEBHOOK_URL: {webhook_url_for_telegram} ===")
     
-    # NOTA: NON usiamo app.run_webhook() perché il server keep-alive
-    # gestisce direttamente le richieste webhook attraverso BotRequestHandler
-    # Il bot elaborerà gli update quando arrivano dal server keep-alive
-    
-    logger.info("=== BOT READY - in attesa di richieste ===")
-    print("\n" + "=" * 50)
-    print("🤖 HelperBot in ascolto...")
-    print(f"📡 Endpoint webhook: http://0.0.0.0:{PORT}/webhook")
-    print("=" * 50)
+    # Usa app.run_webhook() - metodo standard di PTB per webhook
+    app.run_webhook(
+        listen=HOST,
+        port=PORT,
+        url_path='webhook',
+        webhook_url=webhook_url_for_telegram,
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
+    )
 
 
 if __name__ == "__main__":
