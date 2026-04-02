@@ -1804,13 +1804,12 @@ async def post_init(application: Application):
     logger.info("Calling set_bot_application...")
     set_bot_application(application)
     
-    # Configura il webhook con Telegram
-    logger.info("Calling setup_webhook...")
-    await setup_webhook(application)
+    # NOTE: Non configuriamo il webhook perché useremo POLLING
+    # Il bot si connetterà direttamente a Telegram
+    # logger.info("Calling setup_webhook...")
+    # await setup_webhook(application)
     
-    # NOTA: Il server keep-alive viene avviato in main() dopo questa funzione
-    # per evitare che post_init blocchi l'esecuzione
-    logger.info("=== POST_INIT COMPLETE: webhook configurato ===")
+    logger.info("=== POST_INIT COMPLETE: uso POLLING ===")
 
 
 async def post_shutdown(application: Application):
@@ -1897,39 +1896,18 @@ def run_bot():
     print("=" * 50)
     
     # =====================================================
-    # AVVIO DEL BOT CON WEBHOOK PTB
-    # Usa il metodo integrato di PTB che gestisce:
-    # 1. Server HTTP
-    # 2. Webhook con Telegram
-    # 3. Processing degli update
+    # AVVIO DEL BOT CON POLLING
+    # Usa polling invece di webhook per evitare rate limiting
+    # Il bot rimane in ascolto dei messaggi
     # =====================================================
     
-    logger.info("=== STARTING BOT WITH WEBHOOK ===")
+    logger.info("=== STARTING BOT WITH POLLING ===")
     
-    # Costruisci l'URL del webhook per Telegram
-    render_service_name = os.environ.get('RENDER_SERVICE_NAME', '')
-    webhook_url_env = os.environ.get("WEBHOOK_URL")
-    
-    if webhook_url_env:
-        webhook_url_for_telegram = webhook_url_env
-    elif render_service_name:
-        webhook_url_for_telegram = f"https://{render_service_name}.onrender.com/webhook"
-    else:
-        webhook_url_for_telegram = "https://telegram-iptv-bot-ultra-pro.onrender.com/webhook"
-    
-    logger.info(f"=== WEBHOOK_URL: {webhook_url_for_telegram} ===")
-    
-    # Usa app.run_webhook() - ma salta la configurazione del webhook
-    # perché è già stato configurato in post_init() con retry
-    # Passa una stringa vuota per evitare che PTB ci provi di nuovo
-    # Il webhook è già attivo su Telegram (impostato in post_init)
-    app.run_webhook(
-        listen=HOST,
-        port=PORT,
-        url_path='webhook',
-        webhook_url='',  # Non configurare di nuovo, usa quello esistente
-        drop_pending_updates=True,
-        allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
+    # Usa run_polling che non richiede configurazione webhook
+    # e non ha problemi di rate limiting
+    app.run_polling(
+        allowed_updates=["message", "callback_query", "edited_message", "channel_post"],
+        drop_pending_updates=True
     )
 
 
