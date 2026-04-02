@@ -187,28 +187,60 @@ async def setup_webhook(application: Application):
     from telegram.error import TelegramError
     
     # Costruisci l'URL del webhook
-    webhook_url = os.environ.get("WEBHOOK_URL", f"https://{os.environ.get('RENDER_SERVICE_NAME', 'helperbot')}.onrender.com/webhook")
+    render_service_name = os.environ.get('RENDER_SERVICE_NAME', '')
+    webhook_url = os.environ.get("WEBHOOK_URL")
+    
+    # Se WEBHOOK_URL non è impostato, costruiscilo da RENDER_SERVICE_NAME
+    if not webhook_url and render_service_name:
+        webhook_url = f"https://{render_service_name}.onrender.com/webhook"
+    elif not webhook_url and not render_service_name:
+        # Né WEBHOOK_URL né RENDER_SERVICE_NAME sono impostati
+        # Prova a ricostruirlo da una variabile o usa un fallback
+        webhook_url = f"https://helperbot.onrender.com/webhook"
+        logger.warning("⚠️ RENDER_SERVICE_NAME non è impostato! Usando fallback: helperbot.onrender.com")
+        logger.warning("⚠️ Assicurati che il nome del servizio su Render corrisponda a helperbot!")
+    
+    # LOG DETTAGLIATO: Mostra quale URL viene utilizzato
+    logger.info(f"=== CONFIGURAZIONE WEBHOOK ===")
+    logger.info(f"WEBHOOK_URL env: {os.environ.get('WEBHOOK_URL', 'NON SETTATA')}")
+    logger.info(f"RENDER_SERVICE_NAME: {os.environ.get('RENDER_SERVICE_NAME', 'NON SETTATO')}")
+    logger.info(f"URL webhook utilizzato: {webhook_url}")
+    logger.info(f"===========================")
     
     # Token segreto opzionale per sicurezza aggiuntiva
     webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
     if webhook_secret:
         from keepalive.server import set_webhook_secret
         set_webhook_secret(webhook_secret)
+        logger.info("Webhook secret token configurato")
     
     try:
         # Rimuovi qualsiasi webhook esistente prima di configurarne uno nuovo
         logger.info("Rimuovo webhook esistente...")
         await application.bot.delete_webhook()
+        logger.info("Webhook esistente rimosso")
         
         # Configura il nuovo webhook
-        logger.info(f"Configuro webhook: {webhook_url}")
+        logger.info(f"Configuro webhook verso: {webhook_url}")
         await application.bot.set_webhook(
             url=webhook_url,
             secret_token=webhook_secret if webhook_secret else None,
             allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
         )
         
-        logger.info("Webhook configurato con successo!")
+        logger.info("Webhook impostato, verifico...")
+        
+        # VERIFICA: Controlla che il webhook sia stato impostato correttamente
+        webhook_info = await application.bot.get_webhook_info()
+        logger.info(f"Webhook info - URL: {webhook_info.url}")
+        logger.info(f"Webhook info - pending_updates: {webhook_info.pending_update_count}")
+        
+        if webhook_info.url == webhook_url:
+            logger.info("✅ Webhook configurato correttamente! Telegram invierà gli update a questo URL.")
+        else:
+            logger.warning(f"⚠️ Webhook URL non corrisponde! Atteso: {webhook_url}, Attuale: {webhook_info.url}")
+        
+        logger.info("=== WEBHOOK CONFIGURATO CON SUCCESSO ===")
         
     except TelegramError as e:
         logger.error(f"Errore nella configurazione del webhook: {e}")
@@ -1806,7 +1838,8 @@ def main():
     print("=" * 50)
     print(f"🤖 Bot token: {BOT_TOKEN[:10]}...")
     print(f"👮 Admin IDs: {ADMIN_IDS}")
-    print(f"🌐 Webhook URL: {os.environ.get('WEBHOOK_URL', 'non configurato')}")
+    print(f"🌐 Webhook URL: {os.environ.get('WEBHOOK_URL', 'NON CONFIGURATO - Sara generato automaticamente da RENDER_SERVICE_NAME')}")
+    print(f"🔧 Render Service Name: {os.environ.get('RENDER_SERVICE_NAME', 'NON SETTATO')}")
     print("=" * 50)
     
     # =====================================================
