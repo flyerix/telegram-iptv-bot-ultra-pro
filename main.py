@@ -1783,7 +1783,12 @@ async def post_shutdown(application: Application):
 
 def main():
     """Funzione principale di avvio del bot."""
-    asyncio.run(async_main())
+    # Usa run_until_complete invece di asyncio.run() per evitare conflitti di event loop
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(async_main())
+    finally:
+        loop.close()
 
 
 async def async_main():
