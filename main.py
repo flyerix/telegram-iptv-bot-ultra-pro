@@ -186,6 +186,10 @@ async def setup_webhook(application: Application):
     """
     from telegram.error import TelegramError
     
+    logger.info("=== SETUP_WEBHOOK CALLED ===")
+    logger.info(f"Application.bot: {application.bot}")
+    logger.info(f"Application.bot.token: {application.bot.token[:10] if application.bot and application.bot.token else 'N/A'}...")
+    
     # Costruisci l'URL del webhook
     render_service_name = os.environ.get('RENDER_SERVICE_NAME', '')
     webhook_url = os.environ.get("WEBHOOK_URL")
@@ -1749,12 +1753,17 @@ def setup_jobs(job_queue: JobQueue):
 
 async def post_init(application: Application):
     """Called after initialization."""
+    logger.info("=== POST_INIT STARTED ===")
+    logger.info(f"Application type: {type(application)}")
+    logger.info(f"Application.bot: {application.bot}")
     logger.info("Bot inizializzato con successo!")
     
     # Passa l'application al server per il webhook
+    logger.info("Calling set_bot_application...")
     set_bot_application(application)
     
     # Configura il webhook con Telegram
+    logger.info("Calling setup_webhook...")
     await setup_webhook(application)
     
     # NOTA: Il server keep-alive viene avviato in main() dopo questa funzione
@@ -1774,6 +1783,11 @@ async def post_shutdown(application: Application):
 
 def main():
     """Funzione principale di avvio del bot."""
+    asyncio.run(async_main())
+
+
+async def async_main():
+    """Funzione asincrona principale che contiene tutta la logica di avvio."""
     global persistence, user_management, ticket_system, rate_limiter
     global faq_system, backup_system, onboarding, stato_servizio
     global manutenzione, notifications, statistiche, app
@@ -1843,32 +1857,38 @@ def main():
     print("=" * 50)
     
     # =====================================================
-    # AVVIO SERVER KEEP-ALIVE PRIMA DEL LOOP INFINITO
+    # AVVIO DEL BOT IN MODALITÀ WEBHOOK
     # =====================================================
-    # Questo deve essere chiamato qui perché post_init non blocca
-    # Il server deve partire PRIMA del loop infinito
-    logger.info("=== STARTING KEEP-ALIVE SERVER IN main() ===")
-    logger.info(f"=== PORT: {PORT}, HOST: {HOST} ===")
+    
+    logger.info("=== STARTING BOT WITH run_webhook() ===")
+    
+    # Costruisci l'URL del webhook per Telegram
+    render_service_name = os.environ.get('RENDER_SERVICE_NAME', '')
+    webhook_url_env = os.environ.get("WEBHOOK_URL")
+    
+    if webhook_url_env:
+        webhook_url_for_telegram = webhook_url_env
+    elif render_service_name:
+        webhook_url_for_telegram = f"https://{render_service_name}.onrender.com/webhook"
+    else:
+        webhook_url_for_telegram = "https://helperbot.onrender.com/webhook"
+    
+    logger.info(f"=== WEBHOOK_URL for Telegram: {webhook_url_for_telegram} ===")
     
     try:
-        # Usa threaded=False per eseguire nel main thread - più affidabile su Render.com
-        result = start_keepalive(PORT, threaded=False)
-        logger.info(f"=== start_keepalive result: {result} ===")
+        # Usa run_webhook che chiama automaticamente post_init
+        await app.run_webhook(
+            listen=HOST,
+            port=PORT,
+            url_path='webhook',
+            webhook_url=webhook_url_for_telegram,
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
+        )
     except Exception as e:
-        logger.error(f"=== EXCEPTION in start_keepalive: {e} ===")
+        logger.error(f"=== EXCEPTION in run_webhook: {e} ===")
         import traceback
         logger.error(traceback.format_exc())
-    
-    # Messaggio che appare nei log prima del loop
-    logger.info("Bot in esecuzione in modalità webhook...")
-    print("\n🌐 Server HTTP in ascolto, bot in modalità webhook...")
-    print("   (Il bot riceve gli update via HTTP)")
-    
-    import time
-    # Loop infinito per mantenere il processo in vita
-    # Il server HTTP gestirà le richieste in entrata
-    while True:
-        time.sleep(60)
 
 
 if __name__ == "__main__":
