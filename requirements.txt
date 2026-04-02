@@ -6,8 +6,8 @@
 # DIPENDENZE PRINCIPALI (OBBLIGATORIE)
 # ============================================
 
-# Bot Telegram - versione 20+ con handler per callback query
-python-telegram-bot>=20.0
+# Bot Telegram - versione 20+ con handler per callback query e webhook
+python-telegram-bot[webhooks]>=20.0
 
 # Server Flask per keep-alive (rendering/pinging)
 Flask>=2.0.0
