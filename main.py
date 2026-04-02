@@ -976,20 +976,29 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
         if current_step < MAX_STEPS:
             msg, keyboard = onboarding.genera_messaggio_step(current_step + 1, username)
             if msg:
-                # Evita errore "Message is not modified" controllando se il messaggio è cambiato
-                current_msg = query.message.text if query.message else ""
-                if current_msg != msg:
+                # Evita errore "Message is not modified" controllando sia text che reply_markup
+                try:
                     await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
-                else:
-                    await query.answer()
+                except Exception as e:
+                    if "Message is not modified" in str(e):
+                        logger.info(f"Onboarding: messaggio non modificato per step {current_step + 1}")
+                        await query.answer("Sei già a questo step", show_alert=False)
+                    else:
+                        raise
         else:
             # Se siamo all'ultimo step, completa l'onboarding
             onboarding.completa_onboarding(user_id)
-            await query.edit_message_text(
-                "✅ <b>Onboarding completato!</b>\n\n"
-                "Puoi sempre ripetere l'onboarding con /start",
-                parse_mode=constants.ParseMode.HTML
-            )
+            try:
+                await query.edit_message_text(
+                    "✅ <b>Onboarding completato!</b>\n\n"
+                    "Puoi sempre ripetere l'onboarding con /start",
+                    parse_mode=constants.ParseMode.HTML
+                )
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    await query.answer("Onboarding già completato!", show_alert=False)
+                else:
+                    raise
     
     elif data == f"{CB_ONBOARDING}prev":
         # Pulsante "Precedente"
@@ -999,24 +1008,31 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
         if current_step > 1:
             msg, keyboard = onboarding.genera_messaggio_step(current_step - 1, username)
             if msg:
-                # Evita errore "Message is not modified"
-                current_msg = query.message.text if query.message else ""
-                if current_msg != msg:
+                # Evita errore "Message is not modified" con try/except
+                try:
                     await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
-                else:
-                    await query.answer()
+                except Exception as e:
+                    if "Message is not modified" in str(e):
+                        logger.info(f"Onboarding: messaggio non modificato per step {current_step - 1}")
+                        await query.answer("Sei già a questo step", show_alert=False)
+                    else:
+                        raise
     
     elif data == f"{CB_ONBOARDING}skip":
         # Salta onboarding
         onboarding.completa_onboarding(user_id)
-        # Evita errore "Message is not modified"
-        current_msg = query.message.text if query.message else ""
+        # Evita errore "Message is not modified" con try/except
         skip_msg = "✅ <b>Onboarding completato!</b>\n\nPuoi sempre ripetere l'onboarding con /start"
-        if current_msg != skip_msg:
+        try:
             await query.edit_message_text(
                 skip_msg,
                 parse_mode=constants.ParseMode.HTML
             )
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                await query.answer("Onboarding già completato!", show_alert=False)
+            else:
+                raise
 
 
 async def mostra_step_onboarding(query: CallbackQuery, user_id: str, step: Dict):
