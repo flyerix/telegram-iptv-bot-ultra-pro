@@ -1725,21 +1725,9 @@ async def post_init(application: Application):
     # Configura il webhook con Telegram
     await setup_webhook(application)
     
-    # Avvia keep-alive server - USA MODO BLOCCANTE per Render.com
-    # Il modo threaded può causare problemi di binding su alcune piattaforme
-    logger.info("=== ABOUT TO CALL start_keepalive (blocking mode) ===")
-    logger.info(f"=== PORT from config: {PORT}, HOST: {HOST} ===")
-    
-    # Esegui il server in modo bloccante - questo garantisce che il binding TCP
-    # avvenga prima che la funzione ritorni
-    try:
-        # Usa threaded=False per eseguire nel main thread - più affidabile su Render.com
-        result = start_keepalive(PORT, threaded=False)
-        logger.info(f"=== start_keepalive completed (blocking): {result} ===")
-    except Exception as e:
-        logger.error(f"=== EXCEPTION in start_keepalive: {e} ===")
-        import traceback
-        logger.error(traceback.format_exc())
+    # NOTA: Il server keep-alive viene avviato in main() dopo questa funzione
+    # per evitare che post_init blocchi l'esecuzione
+    logger.info("=== POST_INIT COMPLETE: webhook configurato ===")
 
 
 async def post_shutdown(application: Application):
@@ -1821,14 +1809,31 @@ def main():
     print(f"🌐 Webhook URL: {os.environ.get('WEBHOOK_URL', 'non configurato')}")
     print("=" * 50)
     
-    # Con webhook non usiamo run_polling() - il bot riceve update dal server Flask
-    # Il server Flask è già avviato in post_init
-    # Mantieniamo il processo in vita
+    # =====================================================
+    # AVVIO SERVER KEEP-ALIVE PRIMA DEL LOOP INFINITO
+    # =====================================================
+    # Questo deve essere chiamato qui perché post_init non blocca
+    # Il server deve partire PRIMA del loop infinito
+    logger.info("=== STARTING KEEP-ALIVE SERVER IN main() ===")
+    logger.info(f"=== PORT: {PORT}, HOST: {HOST} ===")
+    
+    try:
+        # Usa threaded=False per eseguire nel main thread - più affidabile su Render.com
+        result = start_keepalive(PORT, threaded=False)
+        logger.info(f"=== start_keepalive result: {result} ===")
+    except Exception as e:
+        logger.error(f"=== EXCEPTION in start_keepalive: {e} ===")
+        import traceback
+        logger.error(traceback.format_exc())
+    
+    # Messaggio che appare nei log prima del loop
     logger.info("Bot in esecuzione in modalità webhook...")
+    print("\n🌐 Server HTTP in ascolto, bot in modalità webhook...")
+    print("   (Il bot riceve gli update via HTTP)")
     
     import time
     # Loop infinito per mantenere il processo in vita
-    # Il server Flask gestirà le richieste in entrata
+    # Il server HTTP gestirà le richieste in entrata
     while True:
         time.sleep(60)
 
