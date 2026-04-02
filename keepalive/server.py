@@ -8,8 +8,8 @@ import logging
 import time
 import json
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, jsonify, request, Response
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from typing import Dict, Any, Optional
 import requests
 
@@ -21,14 +21,12 @@ _webhook_secret_token = None
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Istanza Flask
-app = Flask(__name__)
-
 # Variabili globali per lo stato del server
 _server = None
 _server_thread = None
 _is_running = False
 _start_time = None
+_port = None
 
 # Statistiche globali
 stats = {
@@ -54,88 +52,187 @@ def _get_uptime() -> str:
     return f"{seconds}s"
 
 
-@app.route('/')
-def home():
-    """Homepage con informazioni sul servizio"""
-    stats["requests"] += 1
-    logger.info(f"Richiesta homepage da {request.remote_addr}")
+class BotRequestHandler(BaseHTTPRequestHandler):
+    """
+    Handler personalizzato per gestire le richieste HTTP
+    """
     
-    return jsonify({
-        "service": "HelperBot Keep-Alive Server",
-        "version": "1.0.0",
-        "status": "online",
-        "uptime": _get_uptime(),
-        "endpoints": {
-            "/": "Homepage",
-            "/ping": "Ping semplice",
-            "/health": "Stato completo del servizio",
-            "/status": "Status del bot"
-        }
-    })
-
-
-@app.route('/ping')
-def ping():
-    """Endpoint ping - risposta semplice 'pong'"""
-    stats["requests"] += 1
-    stats["ping_requests"] += 1
-    logger.debug(f"Ping da {request.remote_addr}")
+    def log_message(self, format, *args):
+        """Override per usare il nostro logger"""
+        logger.info(f"{self.address_string()} - {format % args}")
     
-    return jsonify({
-        "status": "pong",
-        "timestamp": datetime.utcnow().isoformat()
-    })
-
-
-@app.route('/health')
-def health():
-    """Endpoint health - stato completo del servizio"""
-    stats["requests"] += 1
-    stats["health_requests"] += 1
-    logger.info(f"Health check da {request.remote_addr}")
+    def _send_json_response(self, data: Dict[str, Any], status_code: int = 200):
+        """Invia una risposta JSON"""
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode('utf-8'))
     
-    return jsonify({
-        "status": "healthy",
-        "service": "helperbot-keepalive",
-        "uptime": _get_uptime(),
-        "uptime_seconds": int(time.time() - _start_time) if _start_time else 0,
-        "requests": {
-            "total": stats["requests"],
-            "ping": stats["ping_requests"],
-            "health": stats["health_requests"],
-            "status": stats["status_requests"]
-        },
-        "server": {
-            "running": _is_running,
-            "port": _server
-        },
-        "timestamp": datetime.utcnow().isoformat()
-    })
+    def do_GET(self):
+        """Gestisce le richieste GET"""
+        global stats
+        
+        if self.path == '/':
+            stats["requests"] += 1
+            logger.info(f"Richiesta homepage da {self.client_address}")
+            
+            self._send_json_response({
+                "service": "HelperBot Keep-Alive Server",
+                "version": "1.0.0",
+                "status": "online",
+                "uptime": _get_uptime(),
+                "endpoints": {
+                    "/": "Homepage",
+                    "/ping": "Ping semplice",
+                    "/health": "Stato completo del servizio",
+                    "/status": "Status del bot"
+                }
+            })
+        
+        elif self.path == '/ping':
+            stats["requests"] += 1
+            stats["ping_requests"] += 1
+            logger.debug(f"Ping da {self.client_address}")
+            
+            self._send_json_response({
+                "status": "pong",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        
+        elif self.path == '/health':
+            stats["requests"] += 1
+            stats["health_requests"] += 1
+            logger.info(f"Health check da {self.client_address}")
+            
+            self._send_json_response({
+                "status": "healthy",
+                "service": "helperbot-keepalive",
+                "uptime": _get_uptime(),
+                "uptime_seconds": int(time.time() - _start_time) if _start_time else 0,
+                "requests": {
+                    "total": stats["requests"],
+                    "ping": stats["ping_requests"],
+                    "health": stats["health_requests"],
+                    "status": stats["status_requests"]
+                },
+                "server": {
+                    "running": _is_running,
+                    "port": _port
+                },
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        
+        elif self.path == '/status':
+            stats["requests"] += 1
+            stats["status_requests"] += 1
+            logger.info(f"Status check da {self.client_address}")
+            
+            bot_status = _get_bot_status()
+            
+            self._send_json_response({
+                "bot": {
+                    "status": "online",
+                    "uptime": _get_uptime()
+                },
+                "statistics": {
+                    "total_requests": stats["requests"],
+                    "ping_requests": stats["ping_requests"],
+                    "health_requests": stats["health_requests"],
+                    "status_requests": stats["status_requests"]
+                },
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        
+        else:
+            # Rotta non trovata
+            self._send_json_response({"error": "Not found"}, 404)
+    
+    def do_POST(self):
+        """Gestisce le richieste POST"""
+        global stats, _bot_application, _webhook_secret_token
+        
+        if self.path == '/webhook':
+            stats["requests"] += 1
+            
+            # Verifica che l'application sia configurata
+            if _bot_application is None:
+                logger.error("Application non configurata per webhook")
+                self._send_json_response({"error": "Bot not configured"}, 500)
+                return
+            
+            # Verifica il token segreto (se configurato)
+            if _webhook_secret_token:
+                secret_header = self.headers.get('X-Telegram-Bot-Api-Secret-Token')
+                if secret_header != _webhook_secret_token:
+                    logger.warning("Token segreto non valido per webhook")
+                    self._send_json_response({"error": "Unauthorized"}, 401)
+                    return
+            
+            try:
+                # Leggi il contenuto della richiesta
+                content_length = int(self.headers.get('Content-Length', 0))
+                if content_length == 0:
+                    logger.warning("Nessun dato ricevuto nel webhook")
+                    self._send_json_response({"error": "No data"}, 400)
+                    return
+                
+                body = self.rfile.read(content_length)
+                update_data = json.loads(body.decode('utf-8'))
+                
+                logger.debug(f"Update ricevuta: {update_data.get('update_id', 'N/A')}")
+                
+                # Crea l'oggetto Update da Telegram
+                from telegram import Update
+                
+                # Crea l'update manualmente
+                update = Update.de_json(update_data, _bot_application.bot)
+                
+                # Processa l'update usando l'application
+                import asyncio
+                from concurrent.futures import ThreadPoolExecutor
+                
+                def run_async_process():
+                    """Esegui la coroutine in un nuovo event loop"""
+                    try:
+                        # Crea un nuovo event loop per questo thread
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            new_loop.run_until_complete(_bot_application.process_update(update))
+                        finally:
+                            new_loop.close()
+                    except Exception as e:
+                        logger.error(f"Errore nell'elaborazione async: {e}")
+                
+                # Esegui in un thread pool per evitare problemi con l'event loop
+                executor = ThreadPoolExecutor(max_workers=1)
+                executor.submit(run_async_process)
+                executor.shutdown(wait=False)
+                
+                # Risposta vuota (200 OK)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(b'{}')
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Errore parsing JSON: {e}")
+                self._send_json_response({"error": "Invalid JSON"}, 400)
+            
+            except Exception as e:
+                logger.error(f"Errore nel processing del webhook: {e}")
+                self._send_json_response({"error": str(e)}, 500)
+        
+        else:
+            # Rotta non trovata
+            self._send_json_response({"error": "Not found"}, 404)
 
 
-@app.route('/status')
-def status():
-    """Endpoint status - stato del bot"""
-    stats["requests"] += 1
-    stats["status_requests"] += 1
-    logger.info(f"Status check da {request.remote_addr}")
-    
-    # Leggi lo stato del bot dai dati (se disponibili)
-    bot_status = _get_bot_status()
-    
-    return jsonify({
-        "bot": {
-            "status": "online",
-            "uptime": _get_uptime()
-        },
-        "statistics": {
-            "total_requests": stats["requests"],
-            "ping_requests": stats["ping_requests"],
-            "health_requests": stats["health_requests"],
-            "status_requests": stats["status_requests"]
-        },
-        "timestamp": datetime.utcnow().isoformat()
-    })
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Server HTTP che gestisce ogni richiesta in un thread separato"""
+    daemon_threads = True
 
 
 def _get_bot_status() -> Dict[str, Any]:
@@ -183,74 +280,6 @@ def set_webhook_secret(secret_token: str):
     logger.info("Token segreto per webhook configurato")
 
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """
-    Endpoint webhook per ricevere update da Telegram
-    """
-    global _bot_application
-    
-    stats["requests"] += 1
-    
-    # Verifica che l'application sia configurata
-    if _bot_application is None:
-        logger.error("Application non configurata per webhook")
-        return jsonify({"error": "Bot not configured"}), 500
-    
-    # Verifica il token segreto (se configurato)
-    if _webhook_secret_token:
-        secret_header = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
-        if secret_header != _webhook_secret_token:
-            logger.warning("Token segreto non valido per webhook")
-            return jsonify({"error": "Unauthorized"}), 401
-    
-    try:
-        # Parse del JSON ricevuto
-        update_data = request.get_json()
-        
-        if not update_data:
-            logger.warning("Nessun dato JSON ricevuto nel webhook")
-            return jsonify({"error": "No data"}), 400
-        
-        logger.debug(f"Update ricevuta: {update_data.get('update_id', 'N/A')}")
-        
-        # Crea l'oggetto Update da Telegram
-        from telegram import Update
-        from telegram.ext import Application
-        
-        # Crea l'update manualmente
-        update = Update.de_json(update_data, _bot_application.bot)
-        
-        # Processa l'update usando l'application
-        # Usiamo un executor per gestire le coroutine in modo sicuro
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
-        
-        def run_async_process():
-            """Esegui la coroutine in un nuovo event loop"""
-            try:
-                # Crea un nuovo event loop per questo thread
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    new_loop.run_until_complete(_bot_application.process_update(update))
-                finally:
-                    new_loop.close()
-            except Exception as e:
-                logger.error(f"Errore nell'elaborazione async: {e}")
-        
-        # Esegui in un thread pool per evitare problemi con l'event loop
-        executor = ThreadPoolExecutor(max_workers=1)
-        executor.submit(run_async_process)
-        executor.shutdown(wait=False)
-        
-        return Response(status=200)
-        
-    except Exception as e:
-        logger.error(f"Errore nel processing del webhook: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
 def start_server(port: int = None, threaded: bool = False) -> bool:
     """
     Avvia il server keep-alive
@@ -273,7 +302,9 @@ def start_server(port: int = None, threaded: bool = False) -> bool:
             port = int(port_env)
     
     logger.info(f"Configurazione server: porta={port}, host=0.0.0.0")
-    global _server, _server_thread, _is_running, _start_time
+    global _server, _server_thread, _is_running, _start_time, _port
+    
+    _port = port
     
     if _is_running:
         logger.warning(f"Server già in esecuzione sulla porta {port}")
@@ -282,10 +313,6 @@ def start_server(port: int = None, threaded: bool = False) -> bool:
     try:
         _start_time = time.time()
         stats["start_time"] = datetime.utcnow().isoformat()
-        
-        # Configura Flask per mostrare tutti i log
-        import logging as flask_logging
-        app.logger.setLevel(flask_logging.INFO)
         
         if threaded:
             # Avvia in un thread separato
@@ -339,8 +366,7 @@ def _health_check_loop(port: int):
     
     while _is_running:
         try:
-            # Verifica che il server Flask risponda
-            # Prova a fare una richiesta a localhost
+            # Verifica che il server HTTP risponda
             try:
                 response = requests.get(f"http://localhost:{port}/health", timeout=2)
                 if response.status_code != 200:
@@ -358,7 +384,7 @@ def _health_check_loop(port: int):
 
 def _restart_server(port: int):
     """
-    Riavvia il server Flask.
+    Riavvia il server HTTP.
     """
     global _is_running, _server_thread
     
@@ -382,19 +408,20 @@ def _restart_server(port: int):
 
 
 def _run_server(port: int):
-    """Funzione interna per eseguire il server Flask"""
+    """Funzione interna per eseguire il server HTTP"""
     global _server
     try:
-        logger.info(f"Tentativo di avvio server Flask su porta {port}")
-        # threaded=True per gestire richieste in thread separati
-        app.run(
-            host='0.0.0.0',
-            port=port,
-            threaded=True,
-            debug=False,
-            use_reloader=False,  # Disabilita il reloader per evitare doppie istanze
-            log_level=logging.INFO  # Assicura che il log di Flask sia visibile
-        )
+        logger.info(f"Tentativo di avvio server HTTP su porta {port}")
+        
+        # Crea il server con l'handler personalizzato
+        server = ThreadedHTTPServer(('0.0.0.0', port), BotRequestHandler)
+        _server = server
+        
+        logger.info(f"Server HTTP in ascolto su 0.0.0.0:{port}")
+        
+        # Servi per sempre
+        server.serve_forever()
+        
     except Exception as e:
         logger.error(f"Errore nell'esecuzione del server: {e}")
         import traceback
@@ -416,8 +443,8 @@ def stop_server() -> bool:
         return False
     
     try:
-        # Nota: Flask non supporta shutdown elegante da codice
-        # Il thread verrà terminato quando il processo principale termina
+        if _server:
+            _server.shutdown()
         _is_running = False
         logger.info("Server keep-alive fermato")
         return True
@@ -437,7 +464,7 @@ def get_status() -> Dict[str, Any]:
         "running": _is_running,
         "uptime": _get_uptime() if _is_running else "0s",
         "requests": stats["requests"],
-        "port": _server if isinstance(_server, int) else None,
+        "port": _port,
         "start_time": stats.get("start_time")
     }
 
