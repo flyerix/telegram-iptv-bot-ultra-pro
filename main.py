@@ -180,11 +180,13 @@ sys.excepthook = global_exception_handler
 async def setup_webhook(application: Application):
     """
     Configura il webhook con Telegram.
+    Include retry con backoff per gestire rate limiting.
     
     Args:
         application: Application del bot Telegram
     """
-    from telegram.error import TelegramError
+    import asyncio
+    from telegram.error import TelegramError, RetryAfter
     
     logger.info("=== SETUP_WEBHOOK CALLED ===")
     logger.info(f"Application.bot: {application.bot}")
@@ -198,13 +200,9 @@ async def setup_webhook(application: Application):
     if not webhook_url and render_service_name:
         webhook_url = f"https://{render_service_name}.onrender.com/webhook"
     elif not webhook_url and not render_service_name:
-        # Né WEBHOOK_URL né RENDER_SERVICE_NAME sono impostati
-        # Prova a ricostruirlo da una variabile o usa un fallback
-        webhook_url = f"https://helperbot.onrender.com/webhook"
-        logger.warning("⚠️ RENDER_SERVICE_NAME non è impostato! Usando fallback: helperbot.onrender.com")
-        logger.warning("⚠️ Assicurati che il nome del servizio su Render corrisponda a helperbot!")
+        webhook_url = f"https://telegram-iptv-bot-ultra-pro.onrender.com/webhook"
+        logger.warning("⚠️ RENDER_SERVICE_NAME non è impostato! Usando fallback")
     
-    # LOG DETTAGLIATO: Mostra quale URL viene utilizzato
     logger.info(f"=== CONFIGURAZIONE WEBHOOK ===")
     logger.info(f"WEBHOOK_URL env: {os.environ.get('WEBHOOK_URL', 'NON SETTATA')}")
     logger.info(f"RENDER_SERVICE_NAME: {os.environ.get('RENDER_SERVICE_NAME', 'NON SETTATO')}")
@@ -218,37 +216,81 @@ async def setup_webhook(application: Application):
         set_webhook_secret(webhook_secret)
         logger.info("Webhook secret token configurato")
     
-    try:
-        # Rimuovi qualsiasi webhook esistente prima di configurarne uno nuovo
-        logger.info("Rimuovo webhook esistente...")
-        await application.bot.delete_webhook()
-        logger.info("Webhook esistente rimosso")
+    # Attendi un po' prima di configurare il webhook per evitare flood control
+    logger.info("Attesa iniziale di 3 secondi per evitare flood control...")
+    await asyncio.sleep(3)
+    
+    # Funzione per tentare di impostare il webhook con retry
+    max_attempts = 5
+    base_delay = 2  # secondi
+    
+    async def attempt_set_webhook(attempt: int) -> bool:
+        try:
+            # Rimuovi qualsiasi webhook esistente
+            logger.info(f"Tentativo {attempt}/{max_attempts}: Rimuovo webhook esistente...")
+            try:
+                await application.bot.delete_webhook()
+                logger.info("Webhook esistente rimosso")
+            except Exception as e:
+                logger.warning(f"Errore rimozione webhook (probabilmente non esiste): {e}")
+            
+            # Piccola pausa
+            await asyncio.sleep(1)
+            
+            # Configura il nuovo webhook
+            logger.info(f"Tentativo {attempt}: Configuro webhook verso: {webhook_url}")
+            await application.bot.set_webhook(
+                url=webhook_url,
+                secret_token=webhook_secret if webhook_secret else None,
+                allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
+            )
+            
+            logger.info("Webhook impostato, verifico...")
+            
+            # VERIFICA
+            webhook_info = await application.bot.get_webhook_info()
+            logger.info(f"Webhook info - URL: {webhook_info.url}")
+            logger.info(f"Webhook info - pending_updates: {webhook_info.pending_update_count}")
+            
+            if webhook_info.url == webhook_url:
+                logger.info("✅ Webhook configurato correttamente!")
+                return True
+            else:
+                logger.warning(f"⚠️ Webhook URL non corrisponde!")
+                return False
+            
+        except RetryAfter as e:
+            delay = e.retry_after
+            logger.warning(f"Rate limit raggiunto, attendo {delay} secondi...")
+            await asyncio.sleep(delay)
+            return False
         
-        # Configura il nuovo webhook
-        logger.info(f"Configuro webhook verso: {webhook_url}")
-        await application.bot.set_webhook(
-            url=webhook_url,
-            secret_token=webhook_secret if webhook_secret else None,
-            allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
-        )
+        except TelegramError as e:
+            logger.error(f"Errore Telegram tentativo {attempt}: {e}")
+            # Calcola delay con backoff
+            delay = base_delay * (2 ** (attempt - 1))  # 2, 4, 8, 16 secondi
+            logger.info(f"Attendo {delay} secondi prima del prossimo tentativo...")
+            await asyncio.sleep(delay)
+            return False
         
-        logger.info("Webhook impostato, verifico...")
+        except Exception as e:
+            logger.error(f"Errore generico tentativo {attempt}: {e}")
+            delay = base_delay * (2 ** (attempt - 1))
+            await asyncio.sleep(delay)
+            return False
+    
+    # Esegui i tentativi
+    for attempt in range(1, max_attempts + 1):
+        success = await attempt_set_webhook(attempt)
+        if success:
+            logger.info("=== WEBHOOK CONFIGURATO CON SUCCESSO ===")
+            return
         
-        # VERIFICA: Controlla che il webhook sia stato impostato correttamente
-        webhook_info = await application.bot.get_webhook_info()
-        logger.info(f"Webhook info - URL: {webhook_info.url}")
-        logger.info(f"Webhook info - pending_updates: {webhook_info.pending_update_count}")
-        
-        if webhook_info.url == webhook_url:
-            logger.info("✅ Webhook configurato correttamente! Telegram invierà gli update a questo URL.")
-        else:
-            logger.warning(f"⚠️ Webhook URL non corrisponde! Atteso: {webhook_url}, Attuale: {webhook_info.url}")
-        
-        logger.info("=== WEBHOOK CONFIGURATO CON SUCCESSO ===")
-        
-    except TelegramError as e:
-        logger.error(f"Errore nella configurazione del webhook: {e}")
-        raise
+        if attempt < max_attempts:
+            logger.warning(f"Tentativo {attempt} fallito, proseguo con il prossimo...")
+    
+    # Se tutti i tentativi falliscono
+    logger.error("⚠️ Impossibile configurare il webhook dopo tutti i tentativi!")
 
 
 # ==================== MIDDLEWARE ====================
