@@ -521,7 +521,7 @@ async def cmd_richiedi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     
     # Controlla se ha già una richiesta in pendenza
-    richieste = user_management.get_richieste_by_user(user_id)
+    richieste = user_management.get_richieste_utente(user_id)
     richieste_attive = [r for r in richieste if r.get("stato") == "in_attesa"]
     
     if richieste_attive:
@@ -677,7 +677,7 @@ async def cmd_ticket_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Ottieni tutti i ticket aperti
-    ticket_list = ticket_system.get_ticket_aperti()
+    ticket_list = ticket_system.get_tutti_ticket(stato=StatoTicket.APERTO)
     
     if not ticket_list:
         await update.message.reply_text(
@@ -1657,7 +1657,7 @@ async def job_check_ticket(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Controllo ticket senza risposta...")
     
     try:
-        ticket_aperti = ticket_system.get_ticket_aperti()
+        ticket_aperti = ticket_system.get_tutti_ticket(stato=StatoTicket.APERTO)
         
         for ticket in ticket_aperti:
             # Calcola tempo dall'ultimo aggiornamento
@@ -1855,35 +1855,33 @@ def run_bot():
     print("=" * 50)
     
     # =====================================================
-    # AVVIO DEL BOT CON app.run() - GESTIONE AUTOMATICA
+    # AVVIO DEL BOT CON KEEP-ALIVE SERVER
+    # Il server keep-alive gestisce direttamente le richieste webhook
     # =====================================================
     
-    logger.info("=== STARTING BOT WITH app.run() ===")
+    logger.info("=== STARTING BOT WITH KEEP-ALIVE SERVER ===")
     
-    # Costruisci l'URL del webhook per Telegram
-    render_service_name = os.environ.get('RENDER_SERVICE_NAME', '')
-    webhook_url_env = os.environ.get("WEBHOOK_URL")
+    # Avvia il server keep-alive PRIMA di avviare il bot
+    # threaded=True per non bloccare il main thread
+    logger.info(f"Avviando keep-alive server sulla porta {PORT}...")
+    keepalive_started = start_keepalive(port=PORT, threaded=True)
     
-    if webhook_url_env:
-        webhook_url_for_telegram = webhook_url_env
-    elif render_service_name:
-        webhook_url_for_telegram = f"https://{render_service_name}.onrender.com/webhook"
-    else:
-        webhook_url_for_telegram = "https://helperbot.onrender.com/webhook"
+    if not keepalive_started:
+        logger.error("ERRORE nell'avvio del server keep-alive!")
+        print("❌ Errore nell'avvio del server keep-alive!")
+        sys.exit(1)
     
-    logger.info(f"=== WEBHOOK_URL for Telegram: {webhook_url_for_telegram} ===")
+    print(f"✅ Server keep-alive avviato sulla porta {PORT}")
     
-    # Usa app.run() - metodo STANDARD sincrono di PTB
-    # che gestisce automaticamente l'intero ciclo di vita
-    # (creazione event loop, esecuzione, cleanup)
-    app.run(
-        webhook_url=webhook_url_for_telegram,
-        listen=HOST,
-        port=PORT,
-        url_path='webhook',
-        drop_pending_updates=True,
-        allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
-    )
+    # NOTA: NON usiamo app.run_webhook() perché il server keep-alive
+    # gestisce direttamente le richieste webhook attraverso BotRequestHandler
+    # Il bot elaborerà gli update quando arrivano dal server keep-alive
+    
+    logger.info("=== BOT READY - in attesa di richieste ===")
+    print("\n" + "=" * 50)
+    print("🤖 HelperBot in ascolto...")
+    print(f"📡 Endpoint webhook: http://0.0.0.0:{PORT}/webhook")
+    print("=" * 50)
 
 
 if __name__ == "__main__":
