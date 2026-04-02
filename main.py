@@ -1781,13 +1781,12 @@ async def post_shutdown(application: Application):
         logger.info("Dati salvati")
 
 
-def main():
-    """Funzione principale di avvio del bot."""
-    asyncio.run(async_main())
-
-
-async def async_main():
-    """Funzione asincrona principale che contiene tutta la logica di avvio."""
+def run_bot():
+    """
+    Funzione principale di avvio del bot.
+    Usa direttamente app.run() che gestisce automaticamente
+    l'intero ciclo di vita dell'event loop.
+    """
     global persistence, user_management, ticket_system, rate_limiter
     global faq_system, backup_system, onboarding, stato_servizio
     global manutenzione, notifications, statistiche, app
@@ -1852,15 +1851,14 @@ async def async_main():
     print("=" * 50)
     print(f"🤖 Bot token: {BOT_TOKEN[:10]}...")
     print(f"👮 Admin IDs: {ADMIN_IDS}")
-    print(f"🌐 Webhook URL: {os.environ.get('WEBHOOK_URL', 'NON CONFIGURATO - Sara generato automaticamente da RENDER_SERVICE_NAME')}")
-    print(f"🔧 Render Service Name: {os.environ.get('RENDER_SERVICE_NAME', 'NON SETTATO')}")
+    print(f"🌐 Webhook URL: {os.environ.get('WEBHOOK_URL', 'NON CONFIGURATO')}")
     print("=" * 50)
     
     # =====================================================
-    # AVVIO DEL BOT IN MODALITÀ WEBHOOK
+    # AVVIO DEL BOT CON app.run() - GESTIONE AUTOMATICA
     # =====================================================
     
-    logger.info("=== STARTING BOT WITH run_webhook() ===")
+    logger.info("=== STARTING BOT WITH app.run() ===")
     
     # Costruisci l'URL del webhook per Telegram
     render_service_name = os.environ.get('RENDER_SERVICE_NAME', '')
@@ -1875,21 +1873,18 @@ async def async_main():
     
     logger.info(f"=== WEBHOOK_URL for Telegram: {webhook_url_for_telegram} ===")
     
-    try:
-        # Usa run_webhook che chiama automaticamente post_init
-        await app.run_webhook(
-            listen=HOST,
-            port=PORT,
-            url_path='webhook',
-            webhook_url=webhook_url_for_telegram,
-            drop_pending_updates=True,
-            allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
-        )
-    except Exception as e:
-        logger.error(f"=== EXCEPTION in run_webhook: {e} ===")
-        import traceback
-        logger.error(traceback.format_exc())
+    # Usa app.run() - metodo STANDARD sincrono di PTB
+    # che gestisce automaticamente l'intero ciclo di vita
+    # (creazione event loop, esecuzione, cleanup)
+    app.run(
+        webhook_url=webhook_url_for_telegram,
+        listen=HOST,
+        port=PORT,
+        url_path='webhook',
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
+    )
 
 
 if __name__ == "__main__":
-    main()
+    run_bot()
