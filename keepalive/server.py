@@ -301,7 +301,9 @@ def start_server(port: int = None, threaded: bool = False) -> bool:
         else:
             port = int(port_env)
     
+    logger.info(f"=== START_SERVER CALLED === port={port}, threaded={threaded}")
     logger.info(f"Configurazione server: porta={port}, host=0.0.0.0")
+    logger.info(f"Environment variables: PORT={os.environ.get('PORT')}, KEEPALIVE_PORT={os.environ.get('KEEPALIVE_PORT')}")
     global _server, _server_thread, _is_running, _start_time, _port
     
     _port = port
@@ -313,27 +315,36 @@ def start_server(port: int = None, threaded: bool = False) -> bool:
     try:
         _start_time = time.time()
         stats["start_time"] = datetime.utcnow().isoformat()
+        logger.info("=== STATS INITIALIZED ===")
         
         if threaded:
             # Avvia in un thread separato
+            logger.info("=== CREATING SERVER THREAD ===")
             _server_thread = threading.Thread(
                 target=_run_server,
                 args=(port,),
                 daemon=False  # Non daemon per evitare chiusura prematura
             )
+            logger.info(f"=== THREAD CREATED, STARTING... === daemon={_server_thread.daemon}")
             _server_thread.start()
+            logger.info(f"=== THREAD STARTED, thread.is_alive={_server_thread.is_alive()} ===")
             logger.info(f"Server keep-alive avviato in background sulla porta {port}")
             
             # Attendi che il server sia effettivamente in ascolto - tempo maggiore
-            logger.info("Attesa per binding del server...")
+            logger.info("=== WAITING FOR SERVER BINDING ===")
             max_wait = 10
             waited = 0
             while waited < max_wait:
                 time.sleep(1)
                 waited += 1
-                logger.info(f"Attesa binding server... ({waited}/{max_wait}s)")
+                logger.info(f"Attesa binding server... ({waited}/{max_wait}s), is_running={_is_running}")
+                
+                # Verifica anche che il server sia effettivamente in ascolto
+                if verify_server_listening(port):
+                    logger.info(f"=== SERVER IS LISTENING after {waited}s ===")
+                    break
             
-            logger.info(f"Thread server avviato, procedura completata")
+            logger.info(f"=== THREAD START COMPLETE, is_running={_is_running} ===")
             
             # Avvia health check thread per monitorare il server
             health_thread = threading.Thread(
@@ -342,15 +353,18 @@ def start_server(port: int = None, threaded: bool = False) -> bool:
                 daemon=True
             )
             health_thread.start()
+            logger.info("=== HEALTH CHECK THREAD STARTED ===")
         else:
             # Avvia bloccante
+            logger.info("=== RUNNING SERVER IN MAIN THREAD (BLOCKING) ===")
             _run_server(port)
         
         _is_running = True
+        logger.info(f"=== SERVER STARTUP COMPLETE, _is_running={_is_running} ===")
         return True
         
     except Exception as e:
-        logger.error(f"Errore nell'avvio del server: {e}")
+        logger.error(f"=== ERROR IN start_server: {e} ===")
         import traceback
         logger.error(traceback.format_exc())
         return False
@@ -409,24 +423,60 @@ def _restart_server(port: int):
 
 def _run_server(port: int):
     """Funzione interna per eseguire il server HTTP"""
-    global _server
+    global _server, _is_running
     try:
-        logger.info(f"Tentativo di avvio server HTTP su porta {port}")
+        logger.info(f"=== _run_server CALLED with port={port} ===")
+        logger.info(f"=== ATTEMPTING TO CREATE HTTPServer on 0.0.0.0:{port} ===")
         
-        # Crea il server con l'handler personalizzato
-        server = ThreadedHTTPServer(('0.0.0.0', port), BotRequestHandler)
+        # Abilita reuse dell'indirizzo per evitare errori "Address already in use"
+        import socketserver
+        class ReusableTCPServer(socketserver.ThreadingMixIn, HTTPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+        
+        # Crea il server con l'handler personalizzato e reuse address
+        server = ReusableTCPServer(('0.0.0.0', port), BotRequestHandler)
         _server = server
         
+        logger.info(f"=== HTTPServer CREATED SUCCESSFULLY ===")
         logger.info(f"Server HTTP in ascolto su 0.0.0.0:{port}")
+        logger.info(f"=== ABOUT TO CALL serve_forever() ===")
+        
+        # Segnala che il server è in esecuzione PRIMA di chiamare serve_forever
+        _is_running = True
         
         # Servi per sempre
         server.serve_forever()
         
+        logger.info("=== serve_forever() RETURNED (unexpected!) ===")
+        
     except Exception as e:
-        logger.error(f"Errore nell'esecuzione del server: {e}")
+        logger.error(f"=== ERROR in _run_server: {e} ===")
         import traceback
         logger.error(traceback.format_exc())
         _is_running = False
+
+
+def verify_server_listening(port: int) -> bool:
+    """
+    Verifica che il server sia effettivamente in ascolto sulla porta.
+    Ritorna True se il server risponde, False altrimenti.
+    """
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        result = sock.connect_ex(('localhost', port))
+        sock.close()
+        if result == 0:
+            logger.info(f"=== VERIFICATION: Server IS listening on port {port} ===")
+            return True
+        else:
+            logger.error(f"=== VERIFICATION: Server NOT listening on port {port} (connect result: {result}) ===")
+            return False
+    except Exception as e:
+        logger.error(f"=== VERIFICATION ERROR: {e} ===")
+        return False
 
 
 def stop_server() -> bool:

@@ -1725,15 +1725,21 @@ async def post_init(application: Application):
     # Configura il webhook con Telegram
     await setup_webhook(application)
     
-    # Avvia keep-alive server in background
+    # Avvia keep-alive server - USA MODO BLOCCANTE per Render.com
+    # Il modo threaded può causare problemi di binding su alcune piattaforme
+    logger.info("=== ABOUT TO CALL start_keepalive (blocking mode) ===")
+    logger.info(f"=== PORT from config: {PORT}, HOST: {HOST} ===")
+    
+    # Esegui il server in modo bloccante - questo garantisce che il binding TCP
+    # avvenga prima che la funzione ritorni
     try:
-        start_keepalive(PORT, threaded=True)
-        # Attendi che il server sia completamente avviato prima di procedere
-        import time
-        time.sleep(3)
-        logger.info(f"Keep-alive server avviato su {HOST}:{PORT}")
+        # Usa threaded=False per eseguire nel main thread - più affidabile su Render.com
+        result = start_keepalive(PORT, threaded=False)
+        logger.info(f"=== start_keepalive completed (blocking): {result} ===")
     except Exception as e:
-        logger.error(f"Errore avvio keep-alive: {e}")
+        logger.error(f"=== EXCEPTION in start_keepalive: {e} ===")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 async def post_shutdown(application: Application):

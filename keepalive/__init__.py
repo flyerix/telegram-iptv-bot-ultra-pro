@@ -8,7 +8,8 @@ from keepalive.server import (
     stop_server,
     get_status,
     set_bot_application,
-    set_webhook_secret
+    set_webhook_secret,
+    verify_server_listening
 )
 
 __all__ = [
@@ -16,7 +17,8 @@ __all__ = [
     'stop_server',
     'get_status',
     'set_bot_application',
-    'set_webhook_secret'
+    'set_webhook_secret',
+    'verify_server_listening'
 ]
 
 __version__ = "1.0.0"
