@@ -1919,12 +1919,15 @@ def run_bot():
     
     logger.info(f"=== WEBHOOK_URL: {webhook_url_for_telegram} ===")
     
-    # Usa app.run_webhook() - metodo standard di PTB per webhook
+    # Usa app.run_webhook() - ma salta la configurazione del webhook
+    # perché è già stato configurato in post_init() con retry
+    # Passa una stringa vuota per evitare che PTB ci provi di nuovo
+    # Il webhook è già attivo su Telegram (impostato in post_init)
     app.run_webhook(
         listen=HOST,
         port=PORT,
         url_path='webhook',
-        webhook_url=webhook_url_for_telegram,
+        webhook_url='',  # Non configurare di nuovo, usa quello esistente
         drop_pending_updates=True,
         allowed_updates=["message", "callback_query", "edited_message", "channel_post"]
     )
