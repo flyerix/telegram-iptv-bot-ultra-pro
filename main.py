@@ -1461,7 +1461,7 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
             ],
             [
                 InlineKeyboardButton("🔧 Manutenzione", callback_data=f"{CB_ADMIN}manutenzione"),
-                InlineKeyboardButton("📡 Stato Servizio", callback_data=f"{CB_ADMIN}stato")
+                InlineKeyboardButton("📡 Stato Servizio", callback_data=f"{CB_ADMIN}stato_servizio")
             ],
             [
                 InlineKeyboardButton("🏠 Menu Principale", callback_data=f"{CB_MENU}main")
@@ -1474,12 +1474,148 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=reply_markup,
             parse_mode=constants.ParseMode.HTML
         )
+    
+    elif data == f"{CB_ADMIN}stato_servizio":
+        # Menu Stato Servizio
+        current_stato = stato_servizio.get_stato()
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Operativo", callback_data=f"{CB_ADMIN}stato_op"),
+                InlineKeyboardButton("🟡 Problemi", callback_data=f"{CB_ADMIN}stato_prob")
+            ],
+            [
+                InlineKeyboardButton("🔴 Disservizio", callback_data=f"{CB_ADMIN}stato_dis"),
+                InlineKeyboardButton("🔧 Manutenzione", callback_data=f"{CB_ADMIN}stato_mnt")
+            ],
+            [
+                InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"📡 <b>Stato Servizio</b>\n\nStato attuale: <b>{current_stato}</b>\n\nSeleziona il nuovo stato:",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}manutenzione":
+        # Menu Manutenzione
+        is_active = manutenzione.is_manutenzione_attiva()
+        
+        if is_active:
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔴 Disattiva Manutenzione", callback_data=f"{CB_ADMIN}manutenzione_disattiva")
+                ],
+                [
+                    InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")
+                ]
+            ]
+            msg = "🔧 <b>Manutenzione</b>\n\n⚠️ La manutenzione è <b>ATTIVA</b>\n\nGli utenti normali non possono usare il bot."
+        else:
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔧 Attiva Manutenzione", callback_data=f"{CB_ADMIN}manutenzione_attiva")
+                ],
+                [
+                    InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")
+                ]
+            ]
+            msg = "🔧 <b>Manutenzione</b>\n\n✅ La manutenzione è <b>INATTIVA</b>\n\nIl bot funziona normalmente."
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            msg,
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}manutenzione_disattiva":
+        # Disattiva manutenzione
+        manutenzione.disattiva_manutenzione(str(user_id))
+        await query.answer("✅ Manutenzione disattivata!", show_alert=True)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🔧 Attiva Manutenzione", callback_data=f"{CB_ADMIN}manutenzione_attiva")
+            ],
+            [
+                InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "🔧 <b>Manutenzione</b>\n\n✅ La manutenzione è stata <b>DISATTIVATA</b>",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}ticket":
+        # Menu Gestione Ticket
+        ticket_aperti = ticket_system.get_tutti_ticket(stato="aperto")
+        
+        text = "🎫 <b>Gestione Ticket</b>\n\n"
+        
+        if ticket_aperti:
+            text += f"📊 Ticket aperti: {len(ticket_aperti)}\n\n"
+            for ticket in ticket_aperti[:5]:
+                prio_emoji = "🔴" if ticket.get("priorita") == "alta" else "🟡"
+                text += f"{prio_emoji} #{ticket.get('id', '')[:8]} - {ticket.get('titolo', 'Senza titolo')[:30]}\n"
+        else:
+            text += "📭 Nessun ticket aperto."
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}ticket_refresh")],
+            [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}ticket_refresh":
+        # Refresh ticket - same as ticket menu
+        ticket_aperti = ticket_system.get_tutti_ticket(stato="aperto")
+        
+        text = "🎫 <b>Gestione Ticket</b>\n\n"
+        
+        if ticket_aperti:
+            text += f"📊 Ticket aperti: {len(ticket_aperti)}\n\n"
+            for ticket in ticket_aperti[:5]:
+                prio_emoji = "🔴" if ticket.get("priorita") == "alta" else "🟡"
+                text += f"{prio_emoji} #{ticket.get('id', '')[:8]} - {ticket.get('titolo', 'Senza titolo')[:30]}\n"
+        else:
+            text += "📭 Nessun ticket aperto."
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}ticket_refresh")],
+            [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
     elif data == f"{CB_ADMIN}richieste":
         # Mostra richieste
         richieste = user_management.get_richieste_in_attesa()
         
         if not richieste:
-            await query.edit_message_text("📭 Nessuna richiesta in attesa.")
+            keyboard = [
+                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("📭 Nessuna richiesta in attesa.", reply_markup=reply_markup)
             return
         
         text = "📋 <b>Richieste in attesa:</b>\n\n"
@@ -1518,19 +1654,37 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
         # Crea backup
         try:
             backup_path = backup_system.crea_backup()
+            
+            keyboard = [
+                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             await query.edit_message_text(
                 f"✅ <b>Backup creato!</b>\n\n"
                 f"📁 File: {backup_path}",
+                reply_markup=reply_markup,
                 parse_mode=constants.ParseMode.HTML
             )
         except Exception as e:
-            await query.edit_message_text(f"❌ Errore backup: {e}")
+            keyboard = [
+                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"❌ Errore backup: {e}", reply_markup=reply_markup)
     
     elif data == f"{CB_ADMIN}stats":
         # Mostra statistiche
         stats_text = statistiche.genera_report_completo()
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await query.edit_message_text(
             f"📊 <b>Statistiche</b>\n\n{stats_text}",
+            reply_markup=reply_markup,
             parse_mode=constants.ParseMode.HTML
         )
     
