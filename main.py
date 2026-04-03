@@ -1820,10 +1820,17 @@ async def post_init(application: Application):
     logger.info("Calling set_bot_application...")
     set_bot_application(application)
     
-    # NOTE: Non configuriamo il webhook perché useremo POLLING
-    # Il bot si connetterà direttamente a Telegram
-    # logger.info("Calling setup_webhook...")
-    # await setup_webhook(application)
+    # Cleanup: rimuovi webhook e cleanup sessioni pendenti
+    # Questo risolve il conflitto "other getUpdates request"
+    try:
+        logger.info("Cleaning up existing Telegram sessions...")
+        await application.bot.delete_webhook()
+        logger.info("Webhook rimosso (se esisteva)")
+    except Exception as e:
+        logger.warning(f"Errore cleanup webhook (non critico): {e}")
+    
+    # Piccola pausa per permettere a Telegram di liberare le sessioni
+    await asyncio.sleep(2)
     
     logger.info("=== POST_INIT COMPLETE: uso POLLING ===")
 
