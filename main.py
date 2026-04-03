@@ -228,6 +228,17 @@ async def setup_webhook(application: Application):
     
     async def attempt_set_webhook(attempt: int) -> bool:
         try:
+            # Verifica prima se il webhook è già configurato correttamente
+            logger.info(f"Tentativo {attempt}/{max_attempts}: Verifico webhook esistente...")
+            webhook_info = await application.bot.get_webhook_info()
+            
+            if webhook_info.url and webhook_info.url == webhook_url:
+                logger.info(f"✅ Webhook già configurato correttamente: {webhook_info.url}")
+                return True
+            
+            # Se non è configurato o ha un URL diverso, procedi con la configurazione
+            logger.info(f"Webhook non configurato o diverso, procedo con la configurazione...")
+            
             # Rimuovi qualsiasi webhook esistente
             logger.info(f"Tentativo {attempt}/{max_attempts}: Rimuovo webhook esistente...")
             try:
@@ -2153,19 +2164,9 @@ async def post_init(application: Application):
     logger.info("Calling set_bot_application...")
     set_bot_application(application)
     
-    # Cleanup: rimuovi webhook e cleanup sessioni pendenti
-    # Questo risolve il conflitto "other getUpdates request"
-    try:
-        logger.info("Cleaning up existing Telegram sessions...")
-        await application.bot.delete_webhook()
-        logger.info("Webhook rimosso (se esisteva)")
-    except Exception as e:
-        logger.warning(f"Errore cleanup webhook (non critico): {e}")
-    
-    # Piccola pausa per permettere a Telegram di liberare le sessioni
-    await asyncio.sleep(2)
-    
-    logger.info("=== POST_INIT COMPLETE: uso POLLING ===")
+    # NON cancellare il webhook - usa la versione configurata
+    # Il webhook è già impostato in setup_webhook()
+    logger.info("Post-init completato, il bot userà webhook")
 
 
 async def post_shutdown(application: Application):
@@ -2270,9 +2271,11 @@ def run_bot():
         logger.warning(f"Errore avvio keep-alive server (non critico): {e}")
         print(f"⚠️ Keep-alive server: {e}")
     
-    # Usa run_polling che non richiede configurazione webhook
-    # e non ha problemi di rate limiting
-    app.run_polling(
+    # Usa webhook mode per Render
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="webhook",
         allowed_updates=["message", "callback_query", "edited_message", "channel_post"],
         drop_pending_updates=True
     )
