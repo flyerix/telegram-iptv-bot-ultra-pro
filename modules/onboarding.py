@@ -143,29 +143,26 @@ Tutto in un unico posto: richieste, supporto e informazioni sempre disponibili 2
         # ========== STEP 2: Come richiedere la lista IPTV ==========
         step2 = OnboardingStep(
             step_number=STEP_2,
-            title="📺 Come richiedere la tua lista IPTV",
-            content="""<b>📺 Guida alla richiesta lista IPTV</b>
+            title="📺 Come ottenere la tua lista IPTV",
+            content="""<b>📺 Come ottenere la tua lista IPTV</b>
 
-Ecco la procedura semplice e veloce per ottenere la tua lista:
+La procedura per ottenere la tua lista IPTV è semplicissima:
 
-<b>1️⃣ Comando /richiedi</b>
-Invia il comando <code>/richiedi</code> per iniziare la richiesta.
+<b>1️⃣ Invia la richiesta</b>
+Usa il comando <code>/richiedi</code> per inviare una richiesta agli admin.
 
-<b>2️⃣ Inserisci i tuoi dati</b>
-Il bot ti chiederà:
-• Il tuo <b>username fornitore</b> (es. provider123)
-• La tua <b>password</b> (o la password Xtream)
-• Il tipo di lista desiderato (M3U o Xtream)
+<b>2️⃣ Gli admin ti contatteranno</b>
+Un admin verificherà la tua richiesta e ti contatterà privatamente per fornirti i dettagli della lista.
 
-<b>3️⃣ Conferma e invio</b>
-Verifica i dati e conferma. Il team esaminerà la tua richiesta.
+<b>3️⃣ Ricevi la tua lista</b>
+Una volta approvata, riceverai l'URL della tua lista IPTV personalizzata.
 
 <b>⏱️ Tempi di elaborazione</b>
 • Richieste normali: 1-24 ore
-• Ticket urgenti: priorità più alta
+• In caso di urgenze, aprendo un ticket la priorità sarà più alta
 
-⚠️ <b>Nota importante:</b>
-Assicurati di inserire dati corretti. Richieste con dati errati verranno rifiutate.""",
+<b>💡 Consiglio:</b>
+Se hai bisogno urgente della lista, usa <code>/ticket</code> e seleziona priorità Alta!""",
             inline_buttons=[
                 [
                     crea_inline_button("⬅️ Indietro", f"{CB_PREV}"),

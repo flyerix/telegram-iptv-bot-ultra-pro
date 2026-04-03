@@ -574,7 +574,17 @@ async def cmd_richiedi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Crea nuova richiesta
+    # Controlla se ha già una lista
+    lista = user_management.get_lista_utente(user_id)
+    if lista:
+        await update.message.reply_text(
+            "✅ <b>Hai già una lista IPTV attiva!</b>\n\n"
+            f"Usa /lista per visualizzarla.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        return
+    
+    # Crea nuova richiesta semplice
     richiesta = user_management.crea_richiesta(
         user_id,
         update.effective_user.username or "",
@@ -970,23 +980,17 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
     
     elif data == f"{CB_ONBOARDING}next":
         # Pulsante "Avanti" - vai al prossimo step
-        username = update.effective_user.username or ""
-        current_step = onboarding.get_step(user_id)
-        
-        if current_step < MAX_STEPS:
-            msg, keyboard = onboarding.genera_messaggio_step(current_step + 1, username)
-            if msg:
-                # Evita errore "Message is not modified" controllando sia text che reply_markup
-                try:
-                    await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
-                except Exception as e:
-                    if "Message is not modified" in str(e):
-                        logger.info(f"Onboarding: messaggio non modificato per step {current_step + 1}")
-                        await query.answer("Sei già a questo step", show_alert=False)
-                    else:
-                        raise
+        msg, keyboard = onboarding.prossimo_step(user_id)
+        if msg:
+            try:
+                await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    logger.info(f"Onboarding: messaggio non modificato")
+                    await query.answer("Sei già a questo step", show_alert=False)
+                else:
+                    raise
         else:
-            # Se siamo all'ultimo step, completa l'onboarding
             onboarding.completa_onboarding(user_id)
             try:
                 await query.edit_message_text(
@@ -1002,21 +1006,16 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
     
     elif data == f"{CB_ONBOARDING}prev":
         # Pulsante "Precedente"
-        username = update.effective_user.username or ""
-        current_step = onboarding.get_step(user_id)
-        
-        if current_step > 1:
-            msg, keyboard = onboarding.genera_messaggio_step(current_step - 1, username)
-            if msg:
-                # Evita errore "Message is not modified" con try/except
-                try:
-                    await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
-                except Exception as e:
-                    if "Message is not modified" in str(e):
-                        logger.info(f"Onboarding: messaggio non modificato per step {current_step - 1}")
-                        await query.answer("Sei già a questo step", show_alert=False)
-                    else:
-                        raise
+        msg, keyboard = onboarding.precedente_step(user_id)
+        if msg:
+            try:
+                await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    logger.info(f"Onboarding: messaggio non modificato")
+                    await query.answer("Sei già a questo step", show_alert=False)
+                else:
+                    raise
     
     elif data == f"{CB_ONBOARDING}skip":
         # Salta onboarding
@@ -1645,7 +1644,7 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
     elif data.startswith(f"{CB_ADMIN}rifiuta_"):
         richiesta_id = data.replace(f"{CB_ADMIN}rifiuta_", "")
         # Rifiuta richiesta
-        user_management.rifiuta_richiesta(richiesta_id, str(user_id))
+        user_management.rifiuta_richiesta(richiesta_id, str(user_id), "Rifiutato dall'admin")
         
         await query.answer("❌ Richiesta rifiutata.", show_alert=True)
         await query.edit_message_text(f"❌ Richiesta {richiesta_id[:8]} rifiutata.")
