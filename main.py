@@ -104,6 +104,8 @@ app = None
 # Stati per ConversationHandler
 # Stati per ticket (nuovo ConversationHandler)
 SELECT_PRIORITY, ENTER_DESCRIPTION, ENTER_LIST_NAME, CONFIRM = range(4)
+# Stati per richiedi lista
+RICHIEDI_CHOICE, RICHIEDI_NOME = range(14, 16)
 # Stati esistenti
 (
     STATE_START,
@@ -584,29 +586,129 @@ async def cmd_richiedi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Crea nuova richiesta semplice
+    # Chiedi il nome della lista
+    keyboard = [
+        [InlineKeyboardButton("🎫 Crea Ticket", callback_data=f"{CB_TICKET}create")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "📺 <b>Richiedi lista IPTV</b>\n\n"
+        "Inserisci il <b>nome della lista</b> che desideri monitorare.\n\n"
+        "Esempio: «Voglio la lista Gold»\n\n"
+        "Oppure se vuoi creare un ticket per richiedere supporto:",
+        reply_markup=reply_markup,
+        parse_mode=constants.ParseMode.HTML
+    )
+
+
+async def richiedi_choice_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Gestisce la scelta dell'utente nel menu /richiedi."""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(update.effective_user.id)
+    
+    if query.data == "richiedi_esistente":
+        await query.edit_message_text(
+            "📺 <b>Inserisci nome lista</b>\n\n"
+            "Inserisci il nome della lista IPTV che vuoi monitorare:",
+            parse_mode=constants.ParseMode.HTML
+        )
+        return RICHIEDI_NOME
+    elif query.data == "richiedi_ticket":
+        await query.answer()
+        keyboard = [
+            [
+                InlineKeyboardButton("🔴 Alta", callback_data=f"{CB_TICKET}priorita_alta"),
+                InlineKeyboardButton("🟡 Media", callback_data=f"{CB_TICKET}priorita_media"),
+                InlineKeyboardButton("🟢 Bassa", callback_data=f"{CB_TICKET}priorita_bassa")
+            ],
+            [InlineKeyboardButton("❌ Annulla", callback_data=f"{CB_TICKET}annulla")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "🎫 <b>Creazione Ticket</b>\n\n"
+            "Seleziona la <b>priorità</b> del ticket:",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+        context.user_data["ticket_priorita"] = "media"
+        return SELECT_PRIORITY
+    
+    return ConversationHandler.END
+
+
+async def richiedi_nome_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Riceve il nome della lista e crea la richiesta."""
+    lista_nome = update.message.text
+    user_id = str(update.effective_user.id)
+    
     richiesta = user_management.crea_richiesta(
         user_id,
         update.effective_user.username or "",
-        update.effective_user.full_name
+        lista_nome
     )
     
     if richiesta:
         await update.message.reply_text(
-            "✅ <b>Richiesta inviata!</b>\n\n"
-            "La tua richiesta è stata inoltrata agli admin. "
-            "Riceverai una notifica quando sarà approvata.",
+            f"✅ <b>Richiesta inviata!</b>\n\n"
+            f"La tua richiesta per la lista «{lista_nome}» è stata inoltrata agli admin.",
             parse_mode=constants.ParseMode.HTML
         )
-        
-        # Notifica admin
         await notifica_admin_richiesta(richiesta)
     else:
         await update.message.reply_text(
-            "❌ <b>Errore</b>\n\n"
-            "Non è stato possibile creare la richiesta. Riprova.",
+            "❌ Errore nell'invio della richiesta.",
             parse_mode=constants.ParseMode.HTML
         )
+    
+    return ConversationHandler.END
+
+
+async def cmd_richiedi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /richiedi - Richiedi lista IPTV."""
+    if await check_manutenzione(update, context):
+        return
+    
+    if await rate_limit_check(update, context):
+        return
+    
+    user_id = str(update.effective_user.id)
+    
+    richieste = user_management.get_richieste_utente(user_id)
+    richieste_attive = [r for r in richieste if r.get("stato") == "in_attesa"]
+    
+    if richieste_attive:
+        await update.message.reply_text(
+            "⏳ <b>Richiesta già in corso</b>\n\n"
+            "Hai già una richiesta in attesa di approvazione.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        return
+    
+    lista = user_management.get_lista_utente(user_id)
+    if lista:
+        await update.message.reply_text(
+            "✅ <b>Hai già una lista IPTV attiva!</b>\n\n"
+            f"Usa /lista per visualizzarla.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("📋 Lista esistente", callback_data="richiedi_esistente")],
+        [InlineKeyboardButton("🎫 Crea Ticket", callback_data="richiedi_ticket")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "📺 <b>Richiedi lista IPTV</b>\n\n"
+        "Cosa vuoi fare?",
+        reply_markup=reply_markup,
+        parse_mode=constants.ParseMode.HTML
+    )
 
 
 async def cmd_lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -956,16 +1058,18 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
     
     try:
         if data == f"{CB_ONBOARDING}start":
-            # Avvia onboarding
+            # Reset onboarding e ricomincia
+            onboarding._salva_stato(user_id, 1)
             username = update.effective_user.username or ""
             msg, keyboard = onboarding.inizia_onboarding(user_id, username, update.effective_user.full_name)
             if msg:
-                # Evita errore "Message is not modified"
-                current_msg = query.message.text if query.message else ""
-                if current_msg != msg:
+                try:
                     await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
-                else:
-                    await query.answer()
+                except Exception as e:
+                    if "Message is not modified" in str(e):
+                        await query.answer("Onboarding già avviato!", show_alert=False)
+                    else:
+                        raise
         
         elif data.startswith(f"{CB_ONBOARDING}step_"):
             step_num = int(data.replace(f"{CB_ONBOARDING}step_", ""))
@@ -1438,6 +1542,23 @@ ticket_conversation_handler = ConversationHandler(
 )
 
 
+# ConversationHandler per /richiedi
+richiedi_handler = ConversationHandler(
+    entry_points=[CommandHandler("richiedi", cmd_richiedi)],
+    states={
+        RICHIEDI_CHOICE: [
+            CallbackQueryHandler(richiedi_choice_receive, pattern="^richiedi_")
+        ],
+        RICHIEDI_NOME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, richiedi_nome_receive)
+        ]
+    },
+    fallbacks=[CommandHandler("cancel", ticket_cancel)],
+    name="richiedi_conversation",
+    persistent=False
+)
+
+
 async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gestisce callback admin."""
     query = update.callback_query
@@ -1710,6 +1831,12 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
 • Approvate: {richieste_approvate}
 • Rifiutate: {richieste_rifiutate}""".format(**stats_data)
             
+            # Evita errore "Message is not modified"
+            current_msg = query.message.text if query.message else ""
+            if current_msg.strip() == stats_text.strip():
+                await query.answer("Statistiche già aggiornate!", show_alert=False)
+                return
+            
             keyboard = [
                 [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}stats")],
                 [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
@@ -1722,16 +1849,19 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode=constants.ParseMode.HTML
             )
         except Exception as e:
-            logger.error(f"Errore stats: {e}")
-            keyboard = [
-                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                f"❌ Errore nel recupero statistiche: {e}",
-                reply_markup=reply_markup,
-                parse_mode=constants.ParseMode.HTML
-            )
+            if "Message is not modified" in str(e):
+                await query.answer("Statistiche già aggiornate!", show_alert=False)
+            else:
+                logger.error(f"Errore stats: {e}")
+                keyboard = [
+                    [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    f"❌ Errore nel recupero statistiche: {e}",
+                    reply_markup=reply_markup,
+                    parse_mode=constants.ParseMode.HTML
+                )
     
     elif data == f"{CB_ADMIN}manutenzione_attiva":
         # Attiva manutenzione
@@ -1806,6 +1936,7 @@ async def notifica_admin_richiesta(richiesta: Dict):
     text = f"🔔 <b>Nuova richiesta lista IPTV!</b>\n\n"
     text += f"🆔 Utente: {richiesta.get('user_id')}\n"
     text += f"👤 Username: @{richiesta.get('username', 'N/A')}\n"
+    text += f"📺 Lista: {richiesta.get('nome_lista', 'N/A')}\n"
     text += f"📅 Data: {richiesta.get('data_richiesta')}"
     
     keyboard = [
@@ -1947,13 +2078,16 @@ def setup_handlers(application: Application):
     # ConversationHandler per ticket (deve essere aggiunto prima dei CommandHandler)
     application.add_handler(ticket_conversation_handler)
     
+    # ConversationHandler per richiedi
+    application.add_handler(richiedi_handler)
+    
     # Comandi utente
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("faq", cmd_faq))
     application.add_handler(CommandHandler("miei_ticket", cmd_miei_ticket))
     application.add_handler(CommandHandler("stato", cmd_stato))
-    application.add_handler(CommandHandler("richiedi", cmd_richiedi))
+    # Nota: /richiedi è gestito da richiedi_handler
     application.add_handler(CommandHandler("lista", cmd_lista))
     
     # Comandi admin
