@@ -2271,11 +2271,24 @@ def run_bot():
         logger.warning(f"Errore avvio keep-alive server (non critico): {e}")
         print(f"⚠️ Keep-alive server: {e}")
     
+    # Costruisci l'URL del webhook
+    render_service_name = os.environ.get('RENDER_SERVICE_NAME', '')
+    webhook_url = os.environ.get("WEBHOOK_URL")
+    
+    if not webhook_url and render_service_name:
+        webhook_url = f"https://{render_service_name}.onrender.com/webhook"
+    elif not webhook_url and not render_service_name:
+        webhook_url = f"https://telegram-iptv-bot-ultra-pro.onrender.com/webhook"
+        print("⚠️ RENDER_SERVICE_NAME non impostato, usando fallback")
+    
+    print(f"🌐 Webhook URL: {webhook_url}")
+    
     # Usa webhook mode per Render
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path="webhook",
+        webhook_url=webhook_url,  # URL HTTPS richiesto!
         allowed_updates=["message", "callback_query", "edited_message", "channel_post"],
         drop_pending_updates=True
     )
