@@ -127,6 +127,7 @@ CB_TICKET_OTHER_LIST = "ticket_other_list_"
 CB_ADMIN = "admin_"
 CB_STATO = "stato_"
 CB_RICHIESTA = "richiesta_"
+CB_RICHIEDI = "rich_"
 
 
 # ==================== GESTIONE ERRORI ====================
@@ -620,15 +621,14 @@ async def richiedi_choice_receive(update: Update, context: ContextTypes.DEFAULT_
     
     user_id = str(update.effective_user.id)
     
-    if query.data == "richiedi_esistente":
+    if query.data == "rich_esistente":
         await query.edit_message_text(
             "📺 <b>Inserisci nome lista</b>\n\n"
             "Inserisci il nome della lista IPTV che vuoi monitorare:",
             parse_mode=constants.ParseMode.HTML
         )
         return RICHIEDI_NOME
-    elif query.data == "richiedi_ticket":
-        await query.answer()
+    elif query.data == "rich_ticket":
         keyboard = [
             [
                 InlineKeyboardButton("🔴 Alta", callback_data=f"{CB_TICKET}priorita_alta"),
@@ -709,8 +709,8 @@ async def cmd_richiedi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     keyboard = [
-        [InlineKeyboardButton("📋 Lista esistente", callback_data="richiedi_esistente")],
-        [InlineKeyboardButton("🎫 Crea Ticket", callback_data="richiedi_ticket")]
+        [InlineKeyboardButton("📋 Lista esistente", callback_data="rich_esistente")],
+        [InlineKeyboardButton("🎫 Crea Ticket", callback_data="rich_ticket")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -1558,7 +1558,7 @@ richiedi_handler = ConversationHandler(
     entry_points=[CommandHandler("richiedi", cmd_richiedi)],
     states={
         RICHIEDI_CHOICE: [
-            CallbackQueryHandler(richiedi_choice_receive, pattern="^richiedi_")
+            CallbackQueryHandler(richiedi_choice_receive, pattern="^rich_")
         ],
         RICHIEDI_NOME: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, richiedi_nome_receive)
@@ -1599,6 +1599,9 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton("📡 Stato Servizio", callback_data=f"{CB_ADMIN}stato_servizio")
             ],
             [
+                InlineKeyboardButton("📺 Gestione Liste", callback_data=f"{CB_ADMIN}liste")
+            ],
+            [
                 InlineKeyboardButton("🏠 Menu Principale", callback_data=f"{CB_MENU}main")
             ]
         ]
@@ -1609,6 +1612,31 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=reply_markup,
             parse_mode=constants.ParseMode.HTML
         )
+    
+    elif data == f"{CB_ADMIN}liste":
+        # Gestione Liste IPTV
+        try:
+            liste = user_management.get_tutte_liste()
+            
+            text = "📺 <b>Gestione Liste IPTV</b>\n\n"
+            
+            if liste:
+                for lista_id, lista in liste.items():
+                    stato = lista.get('stato', 'inattiva')
+                    text += f"• <b>{lista.get('nome', 'Senza nome')}</b> - {stato}\n"
+            else:
+                text += "Nessuna lista configurata."
+            
+            keyboard = [
+                [InlineKeyboardButton("➕ Aggiungi Lista", callback_data=f"{CB_ADMIN}lista_nuova")],
+                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"Errore gestione liste: {e}")
+            await query.answer(f"Errore: {e}", show_alert=True)
     
     elif data == f"{CB_ADMIN}stato_servizio":
         # Menu Stato Servizio
@@ -1897,6 +1925,16 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
                 f"✅ Stato aggiornato a: <b>{stato_mapping[stato]}</b>",
                 parse_mode=constants.ParseMode.HTML
             )
+    
+    elif data == f"{CB_ADMIN}lista_nuova":
+        # Nuova lista IPTV - per ora mostra un messaggio informativo
+        await query.edit_message_text(
+            "📺 <b>Nuova Lista IPTV</b>\n\n"
+            "📝 Inserisci il nome della nuova lista IPTV:\n\n"
+            "Questa funzionalità richiede ulteriori informazioni (URL, scadenza, ecc.).\n"
+            "Contatta lo sviluppatore per completare l'implementazione.",
+            parse_mode=constants.ParseMode.HTML
+        )
 
 
 async def handle_callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
