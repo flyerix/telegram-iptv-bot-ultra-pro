@@ -39,7 +39,7 @@ class FaqSystem:
     def _initialize_data(self) -> None:
         """Inizializza i dati FAQ se non esistono"""
         faq_data = self.persistence.get_data("faq")
-        if faq_data is None or (isinstance(faq_data, list) and len(faq_data) == 0):
+        if not faq_data:
             self._populate_initial_faq()
             logger.info("FAQ inizializzate con dati predefiniti")
 

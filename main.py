@@ -954,48 +954,78 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
     data = query.data
     user_id = str(update.effective_user.id)
     
-    if data == f"{CB_ONBOARDING}start":
-        # Avvia onboarding
-        username = update.effective_user.username or ""
-        msg, keyboard = onboarding.inizia_onboarding(user_id, username, update.effective_user.full_name)
-        if msg:
-            # Evita errore "Message is not modified"
-            current_msg = query.message.text if query.message else ""
-            if current_msg != msg:
-                await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
-            else:
-                await query.answer()
-    
-    elif data.startswith(f"{CB_ONBOARDING}step_"):
-        step_num = int(data.replace(f"{CB_ONBOARDING}step_", ""))
-        username = update.effective_user.username or ""
-        msg, keyboard = onboarding.genera_messaggio_step(step_num, username)
-        if msg:
-            # Evita errore "Message is not modified"
-            current_msg = query.message.text if query.message else ""
-            if current_msg != msg:
-                await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
-            else:
-                await query.answer()
-    
-    elif data == f"{CB_ONBOARDING}next":
-        # Pulsante "Avanti" - vai al prossimo step
-        msg, keyboard = onboarding.prossimo_step(user_id)
-        if msg:
-            try:
-                await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
-            except Exception as e:
-                if "Message is not modified" in str(e):
-                    logger.info(f"Onboarding: messaggio non modificato")
-                    await query.answer("Sei già a questo step", show_alert=False)
+    try:
+        if data == f"{CB_ONBOARDING}start":
+            # Avvia onboarding
+            username = update.effective_user.username or ""
+            msg, keyboard = onboarding.inizia_onboarding(user_id, username, update.effective_user.full_name)
+            if msg:
+                # Evita errore "Message is not modified"
+                current_msg = query.message.text if query.message else ""
+                if current_msg != msg:
+                    await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
                 else:
-                    raise
-        else:
+                    await query.answer()
+        
+        elif data.startswith(f"{CB_ONBOARDING}step_"):
+            step_num = int(data.replace(f"{CB_ONBOARDING}step_", ""))
+            username = update.effective_user.username or ""
+            msg, keyboard = onboarding.genera_messaggio_step(step_num, username)
+            if msg:
+                # Evita errore "Message is not modified"
+                current_msg = query.message.text if query.message else ""
+                if current_msg != msg:
+                    await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
+                else:
+                    await query.answer()
+        
+        elif data == f"{CB_ONBOARDING}next":
+            # Pulsante "Avanti" - vai al prossimo step
+            msg, keyboard = onboarding.prossimo_step(user_id)
+            if msg:
+                try:
+                    await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
+                except Exception as e:
+                    if "Message is not modified" in str(e):
+                        logger.info(f"Onboarding: messaggio non modificato")
+                        await query.answer("Sei già a questo step", show_alert=False)
+                    else:
+                        raise
+            else:
+                onboarding.completa_onboarding(user_id)
+                try:
+                    await query.edit_message_text(
+                        "✅ <b>Onboarding completato!</b>\n\n"
+                        "Puoi sempre ripetere l'onboarding con /start",
+                        parse_mode=constants.ParseMode.HTML
+                    )
+                except Exception as e:
+                    if "Message is not modified" in str(e):
+                        await query.answer("Onboarding già completato!", show_alert=False)
+                    else:
+                        raise
+        
+        elif data == f"{CB_ONBOARDING}prev":
+            # Pulsante "Precedente"
+            msg, keyboard = onboarding.precedente_step(user_id)
+            if msg:
+                try:
+                    await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
+                except Exception as e:
+                    if "Message is not modified" in str(e):
+                        logger.info(f"Onboarding: messaggio non modificato")
+                        await query.answer("Sei già a questo step", show_alert=False)
+                    else:
+                        raise
+        
+        elif data == f"{CB_ONBOARDING}skip":
+            # Salta onboarding
             onboarding.completa_onboarding(user_id)
+            # Evita errore "Message is not modified" con try/except
+            skip_msg = "✅ <b>Onboarding completato!</b>\n\nPuoi sempre ripetere l'onboarding con /start"
             try:
                 await query.edit_message_text(
-                    "✅ <b>Onboarding completato!</b>\n\n"
-                    "Puoi sempre ripetere l'onboarding con /start",
+                    skip_msg,
                     parse_mode=constants.ParseMode.HTML
                 )
             except Exception as e:
@@ -1003,35 +1033,9 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
                     await query.answer("Onboarding già completato!", show_alert=False)
                 else:
                     raise
-    
-    elif data == f"{CB_ONBOARDING}prev":
-        # Pulsante "Precedente"
-        msg, keyboard = onboarding.precedente_step(user_id)
-        if msg:
-            try:
-                await query.edit_message_text(msg, reply_markup=keyboard, parse_mode=constants.ParseMode.HTML)
-            except Exception as e:
-                if "Message is not modified" in str(e):
-                    logger.info(f"Onboarding: messaggio non modificato")
-                    await query.answer("Sei già a questo step", show_alert=False)
-                else:
-                    raise
-    
-    elif data == f"{CB_ONBOARDING}skip":
-        # Salta onboarding
-        onboarding.completa_onboarding(user_id)
-        # Evita errore "Message is not modified" con try/except
-        skip_msg = "✅ <b>Onboarding completato!</b>\n\nPuoi sempre ripetere l'onboarding con /start"
-        try:
-            await query.edit_message_text(
-                skip_msg,
-                parse_mode=constants.ParseMode.HTML
-            )
-        except Exception as e:
-            if "Message is not modified" in str(e):
-                await query.answer("Onboarding già completato!", show_alert=False)
-            else:
-                raise
+    except Exception as e:
+        logger.error(f"Errore onboarding: {e}")
+        await query.answer(f"Errore: {e}", show_alert=True)
 
 
 async def mostra_step_onboarding(query: CallbackQuery, user_id: str, step: Dict):
@@ -1581,29 +1585,41 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
     
     elif data == f"{CB_ADMIN}ticket_refresh":
         # Refresh ticket - same as ticket menu
-        ticket_aperti = ticket_system.get_tutti_ticket(stato="aperto")
-        
-        text = "🎫 <b>Gestione Ticket</b>\n\n"
-        
-        if ticket_aperti:
-            text += f"📊 Ticket aperti: {len(ticket_aperti)}\n\n"
-            for ticket in ticket_aperti[:5]:
-                prio_emoji = "🔴" if ticket.get("priorita") == "alta" else "🟡"
-                text += f"{prio_emoji} #{ticket.get('id', '')[:8]} - {ticket.get('titolo', 'Senza titolo')[:30]}\n"
-        else:
-            text += "📭 Nessun ticket aperto."
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}ticket_refresh")],
-            [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            text,
-            reply_markup=reply_markup,
-            parse_mode=constants.ParseMode.HTML
-        )
+        try:
+            ticket_aperti = ticket_system.get_tutti_ticket(stato="aperto")
+            
+            text = "🎫 <b>Gestione Ticket</b>\n\n"
+            
+            if ticket_aperti:
+                text += f"📊 Ticket aperti: {len(ticket_aperti)}\n\n"
+                for ticket in ticket_aperti[:5]:
+                    prio_emoji = "🔴" if ticket.get("priorita") == "alta" else "🟡"
+                    text += f"{prio_emoji} #{ticket.get('id', '')[:8]} - {ticket.get('titolo', 'Senza titolo')[:30]}\n"
+            else:
+                text += "📭 Nessun ticket aperto."
+            
+            keyboard = [
+                [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}ticket_refresh")],
+                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=constants.ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Errore ticket_refresh: {e}")
+            keyboard = [
+                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"❌ Errore nel recupero ticket: {e}",
+                reply_markup=reply_markup,
+                parse_mode=constants.ParseMode.HTML
+            )
     
     elif data == f"{CB_ADMIN}richieste":
         # Mostra richieste
@@ -1674,9 +1690,10 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
     
     elif data == f"{CB_ADMIN}stats":
         # Mostra statistiche in modo ordinato
-        stats_data = user_management.get_statistiche()
-        
-        stats_text = """📊 <b>Statistiche HelperBot</b>
+        try:
+            stats_data = user_management.get_statistiche()
+            
+            stats_text = """📊 <b>Statistiche HelperBot</b>
 
 📈 <b>Utenti:</b>
 • Totali: {totale_utenti}
@@ -1692,18 +1709,29 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
 • In attesa: {richieste_pendenti}
 • Approvate: {richieste_approvate}
 • Rifiutate: {richieste_rifiutate}""".format(**stats_data)
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}stats")],
-            [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            stats_text,
-            reply_markup=reply_markup,
-            parse_mode=constants.ParseMode.HTML
-        )
+            
+            keyboard = [
+                [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}stats")],
+                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                stats_text,
+                reply_markup=reply_markup,
+                parse_mode=constants.ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Errore stats: {e}")
+            keyboard = [
+                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"❌ Errore nel recupero statistiche: {e}",
+                reply_markup=reply_markup,
+                parse_mode=constants.ParseMode.HTML
+            )
     
     elif data == f"{CB_ADMIN}manutenzione_attiva":
         # Attiva manutenzione
