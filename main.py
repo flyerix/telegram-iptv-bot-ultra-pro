@@ -107,7 +107,7 @@ SELECT_PRIORITY, ENTER_DESCRIPTION, ENTER_LIST_NAME, CONFIRM = range(4)
 # Stati per richiedi lista
 RICHIEDI_CHOICE, RICHIEDI_NOME = range(14, 16)
 # Stati per creazione lista admin
-ADMIN_LIST_NAME, ADMIN_LIST_URL, ADMIN_LIST_COST, ADMIN_LIST_SCADENZA, ADMIN_LIST_NOTE = range(16, 21)
+ADMIN_LIST_NAME, ADMIN_LIST_COST, ADMIN_LIST_SCADENZA, ADMIN_LIST_NOTE = range(16, 20)
 # Stati esistenti
 (
     STATE_START,
@@ -1110,15 +1110,23 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
                         raise
             else:
                 onboarding.completa_onboarding(user_id)
+                
+                keyboard = [
+                    [InlineKeyboardButton("📋 Ho già una lista", callback_data=f"{CB_ONBOARDING}lista_existing")],
+                    [InlineKeyboardButton("🎫 Crea Ticket", callback_data=f"{CB_TICKET}create")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
                 try:
                     await query.edit_message_text(
                         "✅ <b>Onboarding completato!</b>\n\n"
-                        "Puoi sempre ripetere l'onboarding con /start",
+                        "Cosa vuoi fare?",
+                        reply_markup=reply_markup,
                         parse_mode=constants.ParseMode.HTML
                     )
                 except Exception as e:
                     if "Message is not modified" in str(e):
-                        await query.answer("Onboarding già completato!", show_alert=False)
+                        await query.answer("Onboarding completato!", show_alert=False)
                     else:
                         raise
         
@@ -1136,20 +1144,43 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
                         raise
         
         elif data == f"{CB_ONBOARDING}skip":
-            # Salta onboarding
             onboarding.completa_onboarding(user_id)
-            # Evita errore "Message is not modified" con try/except
-            skip_msg = "✅ <b>Onboarding completato!</b>\n\nPuoi sempre ripetere l'onboarding con /start"
+            
+            keyboard = [
+                [InlineKeyboardButton("📋 Ho già una lista", callback_data=f"{CB_ONBOARDING}lista_existing")],
+                [InlineKeyboardButton("🎫 Crea Ticket", callback_data=f"{CB_TICKET}create")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             try:
                 await query.edit_message_text(
-                    skip_msg,
+                    "✅ <b>Onboarding completato!</b>\n\n"
+                    "Cosa vuoi fare?",
+                    reply_markup=reply_markup,
                     parse_mode=constants.ParseMode.HTML
                 )
             except Exception as e:
                 if "Message is not modified" in str(e):
-                    await query.answer("Onboarding già completato!", show_alert=False)
+                    await query.answer("Onboarding completato!", show_alert=False)
                 else:
                     raise
+        elif data == f"{CB_ONBOARDING}lista_existing":
+            lista = user_management.get_lista_utente(user_id)
+            if lista:
+                await query.edit_message_text(
+                    f"📺 <b>La tua Lista IPTV</b>\n\n"
+                    f"Nome: <b>{lista.get('nome', 'N/A')}</b>\n"
+                    f"📅 Scadenza: {lista.get('data_scadenza', 'N/A')}\n"
+                    f"📊 Stato: {lista.get('stato', 'N/A')}\n\n"
+                    "Usa /lista per maggiori dettagli.",
+                    parse_mode=constants.ParseMode.HTML
+                )
+            else:
+                await query.edit_message_text(
+                    "📭 <b>Nessuna lista IPTV</b>\n\n"
+                    "Non hai ancora una lista. Usa /richiedi per richiederne una.",
+                    parse_mode=constants.ParseMode.HTML
+                )
     except Exception as e:
         logger.error(f"Errore onboarding: {e}")
         await query.answer(f"Errore: {e}", show_alert=True)
@@ -1524,22 +1555,8 @@ async def admin_lista_receive_name(update: Update, context: ContextTypes.DEFAULT
     
     await update.message.reply_text(
         f"✅ Nome impostato: <b>{nome}</b>\n\n"
-        "Inserisci ora l'<b>URL</b> della lista:\n\n"
-        "Esempio: «http://example.com/lista.m3u8»",
-        parse_mode=constants.ParseMode.HTML
-    )
-    return ADMIN_LIST_URL
-
-
-async def admin_lista_receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Riceve l'URL della lista."""
-    url = update.message.text
-    context.user_data["nuova_lista_url"] = url
-    
-    await update.message.reply_text(
-        f"✅ URL impostato: <code>{url}</code>\n\n"
         "Inserisci il <b>costo</b> mensile della lista:\n\n"
-        "Esempio: «5€» o «5» (sarà interpretato come euro)",
+        "Esempio: «5€» o «10€» al mese",
         parse_mode=constants.ParseMode.HTML
     )
     return ADMIN_LIST_COST
@@ -1587,7 +1604,6 @@ async def admin_lista_receive_note(update: Update, context: ContextTypes.DEFAULT
     note = update.message.text if update.message else ""
     
     nome = context.user_data.get("nuova_lista_nome", "")
-    url = context.user_data.get("nuova_lista_url", "")
     costo = context.user_data.get("nuova_lista_costo", "")
     scadenza = context.user_data.get("nuova_lista_scadenza", "")
     
@@ -1609,13 +1625,12 @@ async def admin_lista_receive_note(update: Update, context: ContextTypes.DEFAULT
     except:
         durata_giorni = 30
     
-    user_management.aggiungi_lista(nome, url, "m3u8", durata_giorni)
+    user_management.aggiungi_lista(nome, "", "m3u8", durata_giorni)
     
     if update.message:
         await update.message.reply_text(
             f"✅ <b>Lista creata con successo!</b>\n\n"
             f"📺 <b>{nome}</b>\n"
-            f"🔗 {url}\n"
             f"💰 {costo}\n"
             f"📅 {scadenza}\n"
             f"📝 {note}",
@@ -1623,7 +1638,6 @@ async def admin_lista_receive_note(update: Update, context: ContextTypes.DEFAULT
         )
     
     context.user_data.pop("nuova_lista_nome", None)
-    context.user_data.pop("nuova_lista_url", None)
     context.user_data.pop("nuova_lista_costo", None)
     context.user_data.pop("nuova_lista_scadenza", None)
     
@@ -1705,9 +1719,6 @@ admin_lista_handler = ConversationHandler(
     states={
         ADMIN_LIST_NAME: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, admin_lista_receive_name)
-        ],
-        ADMIN_LIST_URL: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_lista_receive_url)
         ],
         ADMIN_LIST_COST: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, admin_lista_receive_cost)

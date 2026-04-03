@@ -207,9 +207,6 @@ Sei equipaggiato con tutto ciò che ti serve. Buon utilizzo! 🎉""",
                 ],
                 [
                     crea_inline_button("✅ Completa onboarding", f"{CB_DONE}")
-                ],
-                [
-                    crea_inline_button("🔄 Rivedi onboarding", f"{CB_REVIEW}")
                 ]
             ]
         )
