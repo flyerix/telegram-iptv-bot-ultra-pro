@@ -2260,16 +2260,19 @@ def run_bot():
     
     logger.info("=== STARTING BOT WITH POLLING ===")
     
-    # Avvia il server keep-alive PRIMA del polling per soddisfare il requisito di Render
-    # Il server deve essere in ascolto su una porta per considerare il servizio "live"
-    print("🌐 Avvio server keep-alive...")
-    try:
-        from keepalive.server import start_server
-        start_server(port=PORT, threaded=True)
-        print(f"✅ Server keep-alive avviato sulla porta {PORT}")
-    except Exception as e:
-        logger.warning(f"Errore avvio keep-alive server (non critico): {e}")
-        print(f"⚠️ Keep-alive server: {e}")
+    # NOTA: Quando si usa webhook mode, PTB crea il proprio server HTTP
+    # Quindi NON serve il keepalive server separato
+    # Il server di PTB già mantiene il servizio attivo
+    #
+    # Commentato per evitare conflitto di porta:
+    # print("🌐 Avvio server keep-alive...")
+    # try:
+    #     from keepalive.server import start_server
+    #     start_server(port=PORT, threaded=True)
+    #     print(f"✅ Server keep-alive avviato sulla porta {PORT}")
+    # except Exception as e:
+    #     logger.warning(f"Errore avvio keep-alive server (non critico): {e}")
+    #     print(f"⚠️ Keep-alive server: {e}")
     
     # Costruisci l'URL del webhook
     render_service_name = os.environ.get('RENDER_SERVICE_NAME', '')
