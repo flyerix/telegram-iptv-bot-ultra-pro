@@ -947,7 +947,7 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
     if data == f"{CB_ONBOARDING}start":
         # Avvia onboarding
         username = update.effective_user.username or ""
-        msg, keyboard = onboarding.genera_messaggio_step(1, username)
+        msg, keyboard = onboarding.inizia_onboarding(user_id, username, update.effective_user.full_name)
         if msg:
             # Evita errore "Message is not modified"
             current_msg = query.message.text if query.message else ""
@@ -1674,16 +1674,34 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(f"❌ Errore backup: {e}", reply_markup=reply_markup)
     
     elif data == f"{CB_ADMIN}stats":
-        # Mostra statistiche
-        stats_text = statistiche.genera_report_completo()
+        # Mostra statistiche in modo ordinato
+        stats_data = user_management.get_statistiche()
+        
+        stats_text = """📊 <b>Statistiche HelperBot</b>
+
+📈 <b>Utenti:</b>
+• Totali: {totale_utenti}
+• Attivi: {utenti_attivi}
+• Con lista: {utenti_con_lista}
+
+📺 <b>Liste IPTV:</b>
+• Totali: {totale_liste}
+• Attive: {liste_attive}
+
+📋 <b>Richieste:</b>
+• Totali: {totale_richieste}
+• In attesa: {richieste_pendenti}
+• Approvate: {richieste_approvate}
+• Rifiutate: {richieste_rifiutate}""".format(**stats_data)
         
         keyboard = [
+            [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}stats")],
             [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            f"📊 <b>Statistiche</b>\n\n{stats_text}",
+            stats_text,
             reply_markup=reply_markup,
             parse_mode=constants.ParseMode.HTML
         )
