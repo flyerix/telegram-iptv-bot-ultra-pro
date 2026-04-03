@@ -199,16 +199,21 @@ class BotRequestHandler(BaseHTTPRequestHandler):
                         new_loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(new_loop)
                         try:
+                            # Usa run_until_complete che blocca fino al completamento
                             new_loop.run_until_complete(_bot_application.process_update(update))
                         finally:
                             new_loop.close()
                     except Exception as e:
                         logger.error(f"Errore nell'elaborazione async: {e}")
-                
-                # Esegui in un thread pool per evitare problemi con l'event loop
-                executor = ThreadPoolExecutor(max_workers=1)
-                executor.submit(run_async_process)
-                executor.shutdown(wait=False)
+
+                # Esegui in un thread pool - usa un executor condiviso
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    future = executor.submit(run_async_process)
+                    # Aspetta il completamento per evitare race conditions
+                    try:
+                        future.result(timeout=30)
+                    except Exception as e:
+                        logger.error(f"Timeout o errore nell'elaborazione: {e}")
                 
                 # Risposta vuota (200 OK)
                 self.send_response(200)
