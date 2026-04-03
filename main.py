@@ -1926,6 +1926,17 @@ def run_bot():
     
     logger.info("=== STARTING BOT WITH POLLING ===")
     
+    # Avvia il server keep-alive PRIMA del polling per soddisfare il requisito di Render
+    # Il server deve essere in ascolto su una porta per considerare il servizio "live"
+    print("🌐 Avvio server keep-alive...")
+    try:
+        from keepalive.server import start_server
+        start_server(port=PORT, threaded=True)
+        print(f"✅ Server keep-alive avviato sulla porta {PORT}")
+    except Exception as e:
+        logger.warning(f"Errore avvio keep-alive server (non critico): {e}")
+        print(f"⚠️ Keep-alive server: {e}")
+    
     # Usa run_polling che non richiede configurazione webhook
     # e non ha problemi di rate limiting
     app.run_polling(

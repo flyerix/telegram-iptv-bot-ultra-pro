@@ -780,6 +780,37 @@ class UserManagement:
     
     # ==================== METODI UTILITY ====================
     
+    def get_liste_scadute(self) -> List[Dict[str, Any]]:
+        """
+        Ottiene la lista degli utenti con liste scadute.
+        
+        Returns:
+            Lista di dizionari con i dati degli utenti con liste scadute
+        """
+        try:
+            utenti = self.get_tutti_utenti()
+            liste_scadute = []
+            now = datetime.now()
+            
+            for utente in utenti:
+                data_scadenza = utente.get("data_scadenza")
+                if data_scadenza:
+                    scadenza = datetime.fromisoformat(data_scadenza)
+                    if scadenza <= now and utente.get("lista_approvata"):
+                        liste_scadute.append({
+                            "user_id": utente.get("id"),
+                            "username": utente.get("username"),
+                            "nome": utente.get("nome"),
+                            "lista_id": utente.get("lista_approvata"),
+                            "data_scadenza": data_scadenza
+                        })
+            
+            return liste_scadute
+            
+        except Exception as e:
+            logger.error(f"Errore nel recupero liste scadute: {e}")
+            return []
+    
     def get_statistiche(self) -> Dict[str, Any]:
         """
         Ottiene statistiche su utenti, liste e richieste.
