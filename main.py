@@ -1144,6 +1144,7 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
                         raise
         
         elif data == f"{CB_ONBOARDING}skip":
+            await query.answer()
             onboarding.completa_onboarding(user_id)
             
             keyboard = [
@@ -1165,22 +1166,29 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
                 else:
                     raise
         elif data == f"{CB_ONBOARDING}lista_existing":
-            lista = user_management.get_lista_utente(user_id)
-            if lista:
-                await query.edit_message_text(
-                    f"📺 <b>La tua Lista IPTV</b>\n\n"
-                    f"Nome: <b>{lista.get('nome', 'N/A')}</b>\n"
-                    f"📅 Scadenza: {lista.get('data_scadenza', 'N/A')}\n"
-                    f"📊 Stato: {lista.get('stato', 'N/A')}\n\n"
-                    "Usa /lista per maggiori dettagli.",
-                    parse_mode=constants.ParseMode.HTML
-                )
+            utente = user_management.get_utente(user_id)
+            lista_approvata = utente.get("lista_approvata") if utente else None
+            
+            if lista_approvata:
+                lista = user_management.get_lista(lista_approvata)
+                if lista:
+                    text = f"📺 <b>La tua lista</b>\n\n"
+                    text += f"📺 {lista.get('nome')}\n"
+                    text += f"📅 Scadenza: {lista.get('data_scadenza', 'N/A')}"
+                else:
+                    text = "📺 <b>Hai una lista approvata</b>\n\n"
+                    text += "Usa /lista per vederla."
             else:
-                await query.edit_message_text(
-                    "📭 <b>Nessuna lista IPTV</b>\n\n"
-                    "Non hai ancora una lista. Usa /richiedi per richiederne una.",
-                    parse_mode=constants.ParseMode.HTML
-                )
+                text = "📭 <b>Nessuna lista</b>\n\n"
+                text += "Invia una richiesta con /richiedi per ottenere una lista."
+            
+            keyboard = [
+                [InlineKeyboardButton("📋 Richiedi Lista", callback_data=f"{CB_MENU}richiedi")],
+                [InlineKeyboardButton("🏠 Menu", callback_data=f"{CB_MENU}main")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
     except Exception as e:
         logger.error(f"Errore onboarding: {e}")
         await query.answer(f"Errore: {e}", show_alert=True)
@@ -1786,10 +1794,10 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
             
             text = "📺 <b>Gestione Liste IPTV</b>\n\n"
             
-            if liste:
-                for lista_id, lista in liste.items():
-                    stato = lista.get('stato', 'inattiva')
-                    text += f"• <b>{lista.get('nome', 'Senza nome')}</b> - {stato}\n"
+            if liste and len(liste) > 0:
+                for lista in liste:
+                    text += f"• <b>{lista.get('nome')}</b> - {lista.get('stato', 'inattiva')}\n"
+                    text += f"  💰 {lista.get('costo', 'N/A')} - 📅 {lista.get('data_scadenza', 'N/A')}\n"
             else:
                 text += "Nessuna lista configurata."
             
