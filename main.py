@@ -106,6 +106,8 @@ app = None
 SELECT_PRIORITY, ENTER_DESCRIPTION, ENTER_LIST_NAME, CONFIRM = range(4)
 # Stati per richiedi lista
 RICHIEDI_CHOICE, RICHIEDI_NOME = range(14, 16)
+# Stati per creazione lista admin
+ADMIN_LIST_NAME, ADMIN_LIST_URL, ADMIN_LIST_COST, ADMIN_LIST_SCADENZA, ADMIN_LIST_NOTE = range(16, 21)
 # Stati esistenti
 (
     STATE_START,
@@ -1501,6 +1503,133 @@ async def ticket_confirm_and_create(update: Update, context: ContextTypes.DEFAUL
     return ConversationHandler.END
 
 
+async def admin_lista_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Inizia la creazione di una nuova lista."""
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text(
+        "📺 <b>Nuova Lista IPTV</b>\n\n"
+        "Inserisci il <b>nome</b> della lista:\n\n"
+        "Esempio: «Lista Gold», «Lista Premium», ecc.",
+        parse_mode=constants.ParseMode.HTML
+    )
+    return ADMIN_LIST_NAME
+
+
+async def admin_lista_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Riceve il nome della lista."""
+    nome = update.message.text
+    context.user_data["nuova_lista_nome"] = nome
+    
+    await update.message.reply_text(
+        f"✅ Nome impostato: <b>{nome}</b>\n\n"
+        "Inserisci ora l'<b>URL</b> della lista:\n\n"
+        "Esempio: «http://example.com/lista.m3u8»",
+        parse_mode=constants.ParseMode.HTML
+    )
+    return ADMIN_LIST_URL
+
+
+async def admin_lista_receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Riceve l'URL della lista."""
+    url = update.message.text
+    context.user_data["nuova_lista_url"] = url
+    
+    await update.message.reply_text(
+        f"✅ URL impostato: <code>{url}</code>\n\n"
+        "Inserisci il <b>costo</b> mensile della lista:\n\n"
+        "Esempio: «5€» o «5» (sarà interpretato come euro)",
+        parse_mode=constants.ParseMode.HTML
+    )
+    return ADMIN_LIST_COST
+
+
+async def admin_lista_receive_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Riceve il costo della lista."""
+    costo = update.message.text
+    context.user_data["nuova_lista_costo"] = costo
+    
+    await update.message.reply_text(
+        f"✅ Costo impostato: <b>{costo}</b>\n\n"
+        "Inserisci la <b>data di scadenza</b> della lista:\n\n"
+        "Esempio: «31/12/2026» o «1 anno»",
+        parse_mode=constants.ParseMode.HTML
+    )
+    return ADMIN_LIST_SCADENZA
+
+
+async def admin_lista_receive_scadenza(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Riceve la scadenza della lista."""
+    scadenza = update.message.text
+    context.user_data["nuova_lista_scadenza"] = scadenza
+    
+    keyboard = [
+        [InlineKeyboardButton("⏭️ Salta", callback_data="lista_skip_note")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"✅ Scadenza impostata: <b>{scadenza}</b>\n\n"
+        "Inserisci eventuali <b>note</b> per la lista:\n\n"
+        "Esempio: «Include canali sport»\n"
+        "Oppure clicca «Salta» per continuare:",
+        reply_markup=reply_markup,
+        parse_mode=constants.ParseMode.HTML
+    )
+    return ADMIN_LIST_NOTE
+
+
+async def admin_lista_receive_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Riceve le note e crea la lista."""
+    from datetime import datetime
+    
+    note = update.message.text if update.message else ""
+    
+    nome = context.user_data.get("nuova_lista_nome", "")
+    url = context.user_data.get("nuova_lista_url", "")
+    costo = context.user_data.get("nuova_lista_costo", "")
+    scadenza = context.user_data.get("nuova_lista_scadenza", "")
+    
+    durata_giorni = 30
+    try:
+        scadenza_val = scadenza.lower().strip()
+        if "anno" in scadenza_val:
+            durata_giorni = 365
+        elif "mese" in scadenza_val:
+            durata_giorni = 30
+        elif "/" in scadenza_val:
+            parts = scadenza_val.split("/")
+            if len(parts) == 3:
+                day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
+                input_date = datetime(year if year > 100 else 2000 + year, month, day)
+                delta = input_date - datetime.now()
+                if delta.days > 0:
+                    durata_giorni = delta.days
+    except:
+        durata_giorni = 30
+    
+    user_management.aggiungi_lista(nome, url, "m3u8", durata_giorni)
+    
+    if update.message:
+        await update.message.reply_text(
+            f"✅ <b>Lista creata con successo!</b>\n\n"
+            f"📺 <b>{nome}</b>\n"
+            f"🔗 {url}\n"
+            f"💰 {costo}\n"
+            f"📅 {scadenza}\n"
+            f"📝 {note}",
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    context.user_data.pop("nuova_lista_nome", None)
+    context.user_data.pop("nuova_lista_url", None)
+    context.user_data.pop("nuova_lista_costo", None)
+    context.user_data.pop("nuova_lista_scadenza", None)
+    
+    return ConversationHandler.END
+
+
 async def ticket_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Annulla la creazione del ticket."""
     # Prova a rispondere tramite message (se chiamato da /ticket)
@@ -1566,6 +1695,32 @@ richiedi_handler = ConversationHandler(
     },
     fallbacks=[CommandHandler("cancel", ticket_cancel)],
     name="richiedi_conversation",
+    persistent=False
+)
+
+
+# ConversationHandler per creazione lista admin
+admin_lista_handler = ConversationHandler(
+    entry_points=[CallbackQueryHandler(admin_lista_start, pattern=f"^{CB_ADMIN}lista_nuova$")],
+    states={
+        ADMIN_LIST_NAME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_lista_receive_name)
+        ],
+        ADMIN_LIST_URL: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_lista_receive_url)
+        ],
+        ADMIN_LIST_COST: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_lista_receive_cost)
+        ],
+        ADMIN_LIST_SCADENZA: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_lista_receive_scadenza)
+        ],
+        ADMIN_LIST_NOTE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_lista_receive_note)
+        ]
+    },
+    fallbacks=[CommandHandler("cancel", ticket_cancel)],
+    name="admin_lista_conversation",
     persistent=False
 )
 
@@ -1927,14 +2082,7 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
             )
     
     elif data == f"{CB_ADMIN}lista_nuova":
-        # Nuova lista IPTV - per ora mostra un messaggio informativo
-        await query.edit_message_text(
-            "📺 <b>Nuova Lista IPTV</b>\n\n"
-            "📝 Inserisci il nome della nuova lista IPTV:\n\n"
-            "Questa funzionalità richiede ulteriori informazioni (URL, scadenza, ecc.).\n"
-            "Contatta lo sviluppatore per completare l'implementazione.",
-            parse_mode=constants.ParseMode.HTML
-        )
+        return
 
 
 async def handle_callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2129,6 +2277,9 @@ def setup_handlers(application: Application):
     
     # ConversationHandler per richiedi
     application.add_handler(richiedi_handler)
+    
+    # ConversationHandler per creazione lista admin
+    application.add_handler(admin_lista_handler)
     
     # Comandi utente
     application.add_handler(CommandHandler("start", cmd_start))
