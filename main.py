@@ -133,7 +133,7 @@ CB_RICHIESTA = "richiesta_"
 CB_RICHIEDI = "rich_"
 
 # Health check config
-HEALTH_CHECK_INTERVAL = int(os.environ.get("HEALTH_CHECK_INTERVAL", "300"))  # 5 minuti
+HEALTH_CHECK_INTERVAL = int(os.environ.get("HEALTH_CHECK_INTERVAL", "180"))  # 3 minuti
 LAST_HEALTH_CHECK = None
 BOT_RUNNING = True
 
@@ -2326,11 +2326,17 @@ async def try_recovery(context: ContextTypes.DEFAULT_TYPE, error_type: str):
     try:
         bot = context.bot
         
-        if error_type == "telegram_api":
-            # Riavvia il webhook
+        if error_type in ["telegram_api", "wake_up", "bot_ping"]:
             logger.info("🔧 Recovery: riconfigurazione webhook...")
             await setup_webhook(context.application)
             
+            # Verifica che il bot risponda dopo il recovery
+            try:
+                me = await bot.get_me()
+                logger.info(f"✅ Recovery: Bot {me.username} risponde correttamente")
+            except Exception as e:
+                logger.error(f"❌ Recovery: bot non risponde dopo riconfigurazione: {e}")
+                
         elif error_type == "health_check":
             # Prova a verificare il bot
             logger.info("🔧 Recovery: verifica bot...")
@@ -2339,19 +2345,22 @@ async def try_recovery(context: ContextTypes.DEFAULT_TYPE, error_type: str):
                 logger.info(f"✅ Recovery: Bot {me.username} risponde")
             except:
                 logger.error("❌ Recovery: bot non risponde")
-                
-        # Notifica admin
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(
-                    chat_id=admin_id,
-                    text=f"⚠️ <b>Health Check Alert</b>\n\n"
-                         f"Errore rilevato: {error_type}\n"
-                         f"Tentativo di recovery eseguito.",
-                    parse_mode=constants.ParseMode.HTML
-                )
-            except:
-                pass
+                # Riconfigura anche in questo caso
+                await setup_webhook(context.application)
+        
+        # Notifica admin solo per errori critici
+        if error_type in ["telegram_api", "wake_up", "bot_ping"]:
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        chat_id=admin_id,
+                        text=f"⚠️ <b>Bot Recovery Alert</b>\n\n"
+                             f"Errore rilevato: {error_type}\n"
+                             f"Tentativo di recovery eseguito.",
+                        parse_mode=constants.ParseMode.HTML
+                    )
+                except:
+                    pass
                 
     except Exception as e:
         logger.error(f"❌ Recovery fallito: {e}")
@@ -2375,6 +2384,40 @@ async def job_cleanup_sessions(context: ContextTypes.DEFAULT_TYPE):
         logger.info("✅ Cleanup sessioni completato")
     except Exception as e:
         logger.error(f"❌ Errore cleanup sessioni: {e}")
+
+
+# ==================== WAK-UP & PING FUNCTIONS ====================
+
+async def wake_up_bot(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Funzione di wake-up per mantenere attiva la connessione del bot.
+    Effettua una chiamata API a Telegram per verificare che il bot sia vivo.
+    """
+    logger.info("🌅 Wake-up bot...")
+    
+    try:
+        me = await context.bot.get_me()
+        logger.info(f"✅ Bot wake-up: @{me.username} ({me.id}) è attivo")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Wake-up fallito: {e}")
+        await try_recovery(context, "wake_up")
+        return False
+
+
+async def job_bot_ping(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Job periodico per "pingare" il bot ogni 3 minuti.
+    Mantiene attiva la connessione e verifica che il bot risponda.
+    """
+    logger.info("📡 Bot ping...")
+    
+    try:
+        me = await context.bot.get_me()
+        logger.info(f"✅ Bot ping OK: @{me.username} ({me.id})")
+    except Exception as e:
+        logger.error(f"❌ Bot ping fallito: {e}")
+        await try_recovery(context, "bot_ping")
 
 
 async def job_backup(context: ContextTypes.DEFAULT_TYPE):
@@ -2498,11 +2541,18 @@ def setup_handlers(application: Application):
 def setup_jobs(job_queue: JobQueue):
     """Configura i job periodici."""
     
-    # Health check ogni 5 minuti (300 secondi)
+    # Health check ogni 3 minuti (180 secondi)
     job_queue.run_repeating(
         health_check,
         interval=HEALTH_CHECK_INTERVAL,
         first=60  # Prima esecuzione dopo 1 minuto
+    )
+    
+    # Ping del bot ogni 3 minuti per mantenere attiva la connessione
+    job_queue.run_repeating(
+        job_bot_ping,
+        interval=180,  # 3 minuti
+        first=30  # Prima esecuzione dopo 30 secondi
     )
     
     # Cleanup sessioni ogni 15 minuti
