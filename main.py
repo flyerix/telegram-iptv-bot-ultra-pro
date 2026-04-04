@@ -640,7 +640,8 @@ async def cmd_richiedi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("📋 Lista esistente", callback_data="rich_esistente")],
-        [InlineKeyboardButton("🎫 Crea Ticket", callback_data="rich_ticket")]
+        [InlineKeyboardButton("🎫 Crea Ticket", callback_data="rich_ticket")],
+        [InlineKeyboardButton("❓ FAQ", callback_data="rich_faq")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -685,6 +686,21 @@ async def richiedi_choice_receive(update: Update, context: ContextTypes.DEFAULT_
         )
         context.user_data["ticket_priorita"] = "media"
         return SELECT_PRIORITY
+    elif query.data == "rich_faq":
+        keyboard = []
+        for cat_id, cat_nome in FaqSystem.CATEGORIE.items():
+            keyboard.append([
+                InlineKeyboardButton(cat_nome, callback_data=f"{CB_FAQ}categoria_{cat_id}")
+            ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "❓ <b>Scegli una categoria FAQ:</b>",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+        return ConversationHandler.END
     
     return ConversationHandler.END
 
@@ -1733,7 +1749,7 @@ richiedi_handler = ConversationHandler(
     entry_points=[CommandHandler("richiedi", cmd_richiedi)],
     states={
         RICHIEDI_CHOICE: [
-            CallbackQueryHandler(richiedi_choice_receive, pattern="^rich_")
+            CallbackQueryHandler(richiedi_choice_receive)
         ],
         RICHIEDI_NOME: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, richiedi_nome_receive)
