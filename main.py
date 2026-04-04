@@ -16,6 +16,7 @@ Questo file integra tutti i moduli del sistema:
 - Notifications
 - Statistiche
 - Keep-Alive Server
+- Health Check & Jobs
 """
 
 import os
@@ -130,6 +131,11 @@ CB_ADMIN = "admin_"
 CB_STATO = "stato_"
 CB_RICHIESTA = "richiesta_"
 CB_RICHIEDI = "rich_"
+
+# Health check config
+HEALTH_CHECK_INTERVAL = int(os.environ.get("HEALTH_CHECK_INTERVAL", "300"))  # 5 minuti
+LAST_HEALTH_CHECK = None
+BOT_RUNNING = True
 
 
 # ==================== GESTIONE ERRORI ====================
@@ -426,6 +432,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /help - Mostra questa guida
 /faq - Visualizza le FAQ
 /stato - Stato del servizio
+/ping - Verifica stato bot
 
 <b>🎫 Supporto:</b>
 /ticket - Crea un ticket di supporto
@@ -566,19 +573,51 @@ async def cmd_stato(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=constants.ParseMode.HTML)
 
 
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /ping - Verifica lo stato del bot."""
+    try:
+        bot = context.bot
+        me = await bot.get_me()
+        
+        webhook_info = await bot.get_webhook_info()
+        
+        text = f"🏓 <b>Pong!</b>\n\n"
+        text += f"🤖 <b>Bot:</b> @{me.username}\n"
+        text += f"🆔 <b>ID:</b> {me.id}\n"
+        text += f"🌐 <b>Webhook:</b> {webhook_info.url or 'Non impostato'}\n"
+        text += f"📊 <b>Pending updates:</b> {webhook_info.pending_update_count}\n"
+        
+        text += f"\n⏱️ <b>Uptime:</b> "
+        if stato_servizio:
+            info = stato_servizio.get_info_completa()
+            if info:
+                text += info.get("ultimo_riavvio", "N/A")
+            else:
+                text += "N/A"
+        else:
+            text += "N/A"
+        
+        text += f"\n\n✅ <b>Stato:</b> Bot operativo"
+        
+        await update.message.reply_text(text, parse_mode=constants.ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Errore /ping: {e}")
+        await update.message.reply_text(
+            f"❌ <b>Errore</b>\n\n{e}",
+            parse_mode=constants.ParseMode.HTML
+        )
+
+
 async def cmd_richiedi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /richiedi - Richiedi lista IPTV."""
-    # Controlla manutenzione
     if await check_manutenzione(update, context):
         return
     
-    # Verifica rate limit
     if await rate_limit_check(update, context):
         return
     
     user_id = str(update.effective_user.id)
     
-    # Controlla se ha già una richiesta in pendenza
     richieste = user_management.get_richieste_utente(user_id)
     richieste_attive = [r for r in richieste if r.get("stato") == "in_attesa"]
     
@@ -590,7 +629,6 @@ async def cmd_richiedi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Controlla se ha già una lista
     lista = user_management.get_lista_utente(user_id)
     if lista:
         await update.message.reply_text(
@@ -600,17 +638,15 @@ async def cmd_richiedi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Chiedi il nome della lista
     keyboard = [
-        [InlineKeyboardButton("🎫 Crea Ticket", callback_data=f"{CB_TICKET}create")]
+        [InlineKeyboardButton("📋 Lista esistente", callback_data="rich_esistente")],
+        [InlineKeyboardButton("🎫 Crea Ticket", callback_data="rich_ticket")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
         "📺 <b>Richiedi lista IPTV</b>\n\n"
-        "Inserisci il <b>nome della lista</b> che desideri monitorare.\n\n"
-        "Esempio: «Voglio la lista Gold»\n\n"
-        "Oppure se vuoi creare un ticket per richiedere supporto:",
+        "Cosa vuoi fare?",
         reply_markup=reply_markup,
         parse_mode=constants.ParseMode.HTML
     )
@@ -678,50 +714,6 @@ async def richiedi_nome_receive(update: Update, context: ContextTypes.DEFAULT_TY
         )
     
     return ConversationHandler.END
-
-
-async def cmd_richiedi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /richiedi - Richiedi lista IPTV."""
-    if await check_manutenzione(update, context):
-        return
-    
-    if await rate_limit_check(update, context):
-        return
-    
-    user_id = str(update.effective_user.id)
-    
-    richieste = user_management.get_richieste_utente(user_id)
-    richieste_attive = [r for r in richieste if r.get("stato") == "in_attesa"]
-    
-    if richieste_attive:
-        await update.message.reply_text(
-            "⏳ <b>Richiesta già in corso</b>\n\n"
-            "Hai già una richiesta in attesa di approvazione.",
-            parse_mode=constants.ParseMode.HTML
-        )
-        return
-    
-    lista = user_management.get_lista_utente(user_id)
-    if lista:
-        await update.message.reply_text(
-            "✅ <b>Hai già una lista IPTV attiva!</b>\n\n"
-            f"Usa /lista per visualizzarla.",
-            parse_mode=constants.ParseMode.HTML
-        )
-        return
-    
-    keyboard = [
-        [InlineKeyboardButton("📋 Lista esistente", callback_data="rich_esistente")],
-        [InlineKeyboardButton("🎫 Crea Ticket", callback_data="rich_ticket")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "📺 <b>Richiedi lista IPTV</b>\n\n"
-        "Cosa vuoi fare?",
-        reply_markup=reply_markup,
-        parse_mode=constants.ParseMode.HTML
-    )
 
 
 async def cmd_lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2205,7 +2197,137 @@ async def notifica_admin_ticket(ticket: Dict):
             logger.error(f"Errore invio notifica admin {admin_id}: {e}")
 
 
-# ==================== JOB SCHEDULER ====================
+# ==================== HEALTH CHECK & JOBS ====================
+
+async def health_check(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Job periodico per verificare lo stato del bot.
+    Esegue un health check completo e tenta di recuperare se ci sono problemi.
+    """
+    global LAST_HEALTH_CHECK, BOT_RUNNING
+    
+    logger.info("🔍 Eseguo health check...")
+    
+    try:
+        bot = context.bot
+        
+        # 1. Verifica connessione con Telegram
+        try:
+            me = await bot.get_me()
+            logger.info(f"✅ Health check: Bot @{me.username} ({me.id}) è attivo")
+        except Exception as e:
+            logger.error(f"❌ Health check fallito: impossibile contattare Telegram API: {e}")
+            BOT_RUNNING = False
+            await try_recovery(context, "telegram_api")
+            return
+        
+        # 2. Verifica webhook
+        try:
+            webhook_info = await bot.get_webhook_info()
+            if webhook_info.pending_update_count > 100:
+                logger.warning(f"⚠️ Health check: {webhook_info.pending_update_count} pending updates")
+            
+            # Verifica se il webhook è configurato correttamente
+            webhook_url = os.environ.get("WEBHOOK_URL", "")
+            if webhook_info.url != webhook_url:
+                logger.warning(f"⚠️ Health check: webhook URL non corrisponde! "
+                             f"Atteso: {webhook_url}, Attuale: {webhook_info.url}")
+                # Riconfigura il webhook
+                await setup_webhook(context.application)
+        except Exception as e:
+            logger.error(f"❌ Health check: errore webhook: {e}")
+        
+        # 3. Verifica moduli
+        try:
+            if persistence:
+                persistence.save_data()
+                logger.info("✅ Health check: persistenza OK")
+        except Exception as e:
+            logger.error(f"❌ Health check: errore persistenza: {e}")
+        
+        # 4. Verifica rate limiter
+        try:
+            if rate_limiter:
+                rate_limiter.cleanup_old_entries()
+                logger.info("✅ Health check: rate limiter OK")
+        except Exception as e:
+            logger.error(f"❌ Health check: errore rate limiter: {e}")
+        
+        # Aggiorna timestamp ultimo health check
+        LAST_HEALTH_CHECK = datetime.now()
+        BOT_RUNNING = True
+        
+        logger.info(f"✅ Health check completato alle {LAST_HEALTH_CHECK}")
+        
+    except Exception as e:
+        logger.error(f"❌ Health check: errore generico: {e}")
+        BOT_RUNNING = False
+        await try_recovery(context, "health_check")
+
+
+async def try_recovery(context: ContextTypes.DEFAULT_TYPE, error_type: str):
+    """
+    Tenta di recuperare il bot dopo un errore.
+    
+    Args:
+        context: ContextTypes.DEFAULT_TYPE
+        error_type: Tipo di errore rilevato
+    """
+    logger.warning(f"🔧 Tentativo di recovery per: {error_type}")
+    
+    try:
+        bot = context.bot
+        
+        if error_type == "telegram_api":
+            # Riavvia il webhook
+            logger.info("🔧 Recovery: riconfigurazione webhook...")
+            await setup_webhook(context.application)
+            
+        elif error_type == "health_check":
+            # Prova a verificare il bot
+            logger.info("🔧 Recovery: verifica bot...")
+            try:
+                me = await bot.get_me()
+                logger.info(f"✅ Recovery: Bot {me.username} risponde")
+            except:
+                logger.error("❌ Recovery: bot non risponde")
+                
+        # Notifica admin
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=f"⚠️ <b>Health Check Alert</b>\n\n"
+                         f"Errore rilevato: {error_type}\n"
+                         f"Tentativo di recovery eseguito.",
+                    parse_mode=constants.ParseMode.HTML
+                )
+            except:
+                pass
+                
+    except Exception as e:
+        logger.error(f"❌ Recovery fallito: {e}")
+
+
+async def job_cleanup_sessions(context: ContextTypes.DEFAULT_TYPE):
+    """Job per cleanup periodico delle sessioni e dati vecchi."""
+    logger.info("🧹 Eseguo cleanup sessioni...")
+    
+    try:
+        # Cleanup rate limiter
+        if rate_limiter:
+            rate_limiter.cleanup_old_entries()
+            logger.info("✅ Rate limiter cleanup completato")
+        
+        # Salva dati periodicamente
+        if persistence:
+            persistence.save_data()
+            logger.info("✅ Dati salvati durante cleanup")
+        
+        logger.info("✅ Cleanup sessioni completato")
+    except Exception as e:
+        logger.error(f"❌ Errore cleanup sessioni: {e}")
+
 
 async def job_backup(context: ContextTypes.DEFAULT_TYPE):
     """Job per backup automatico ogni 24h."""
@@ -2226,7 +2348,6 @@ async def job_backup(context: ContextTypes.DEFAULT_TYPE):
                 pass
     except Exception as e:
         logger.error(f"Backup automatico fallito: {e}")
-        # Notifica eliminata - usa il metodo corretto se necessario
 
 
 async def job_check_scadenze(context: ContextTypes.DEFAULT_TYPE):
@@ -2248,8 +2369,6 @@ async def job_check_scadenze(context: ContextTypes.DEFAULT_TYPE):
                 )
             except:
                 pass
-            
-            # Notifica admin - rimossa per incompatibilità
         
         logger.info(f"Trovate {len(liste_scadute)} liste scadute")
     except Exception as e:
@@ -2266,7 +2385,6 @@ async def job_check_ticket(context: ContextTypes.DEFAULT_TYPE):
         for ticket in ticket_aperti:
             # Calcola tempo dall'ultimo aggiornamento
             # Se superiore a X ore, notifica admin
-            # (implementazione semplificata)
             pass
         
         logger.info(f"Controllati {len(ticket_aperti)} ticket")
@@ -2280,7 +2398,6 @@ async def job_pulizia_dati(context: ContextTypes.DEFAULT_TYPE):
     
     try:
         # Pulisci dati vecchi (es. log, cache, etc.)
-        # Implementazione specifica a seconda delle esigenze
         logger.info("Pulizia dati completata")
     except Exception as e:
         logger.error(f"Errore pulizia dati: {e}")
@@ -2306,6 +2423,7 @@ def setup_handlers(application: Application):
     application.add_handler(CommandHandler("faq", cmd_faq))
     application.add_handler(CommandHandler("miei_ticket", cmd_miei_ticket))
     application.add_handler(CommandHandler("stato", cmd_stato))
+    application.add_handler(CommandHandler("ping", cmd_ping))
     # Nota: /richiedi è gestito da richiedi_handler
     application.add_handler(CommandHandler("lista", cmd_lista))
     
@@ -2331,6 +2449,20 @@ def setup_handlers(application: Application):
 
 def setup_jobs(job_queue: JobQueue):
     """Configura i job periodici."""
+    
+    # Health check ogni 5 minuti (300 secondi)
+    job_queue.run_repeating(
+        health_check,
+        interval=HEALTH_CHECK_INTERVAL,
+        first=60  # Prima esecuzione dopo 1 minuto
+    )
+    
+    # Cleanup sessioni ogni 15 minuti
+    job_queue.run_repeating(
+        job_cleanup_sessions,
+        interval=900,  # 15 minuti
+        first=300  # Prima esecuzione dopo 5 minuti
+    )
     
     # Backup ogni 24 ore
     job_queue.run_repeating(
@@ -2493,6 +2625,21 @@ def run_bot():
         print("⚠️ RENDER_SERVICE_NAME non impostato, usando fallback")
     
     print(f"🌐 Webhook URL: {webhook_url}")
+    
+    # Configura il webhook prima di avviare il bot
+    print("🔗 Configurazione webhook...")
+    
+    async def configure_webhook():
+        await setup_webhook(app)
+    
+    # Crea un event loop temporaneo per configurare il webhook
+    import asyncio
+    try:
+        asyncio.get_event_loop().run_until_complete(configure_webhook())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(configure_webhook())
     
     # Usa webhook mode per Render
     app.run_webhook(
