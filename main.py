@@ -1157,6 +1157,37 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
                     await query.answer("Onboarding completato!", show_alert=False)
                 else:
                     raise
+        
+        elif data == f"{CB_ONBOARDING}done":
+            await query.answer()
+            onboarding.completa_onboarding(user_id)
+            
+            keyboard = [
+                [InlineKeyboardButton("📋 Ho già una lista", callback_data=f"{CB_ONBOARDING}lista_existing")],
+                [InlineKeyboardButton("🎫 Crea Ticket", callback_data=f"{CB_TICKET}create")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            try:
+                await query.edit_message_text(
+                    "✅ <b>Onboarding completato!</b>\n\n"
+                    "Cosa vuoi fare?",
+                    reply_markup=reply_markup,
+                    parse_mode=constants.ParseMode.HTML
+                )
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    await query.answer("Onboarding completato!", show_alert=False)
+                else:
+                    raise
+        elif data == f"{CB_ONBOARDING}existing":
+            await query.answer()
+            await query.edit_message_text(
+                "📺 <b>Inserisci nome lista</b>\n\n"
+                "Inserisci il nome della lista IPTV che vuoi monitorare:",
+                parse_mode=constants.ParseMode.HTML
+            )
+            return RICHIEDI_NOME
         elif data == f"{CB_ONBOARDING}lista_existing":
             utente = user_management.get_utente(user_id)
             lista_approvata = utente.get("lista_approvata") if utente else None
@@ -1175,7 +1206,8 @@ async def handle_callback_onboarding(update: Update, context: ContextTypes.DEFAU
                 text += "Invia una richiesta con /richiedi per ottenere una lista."
             
             keyboard = [
-                [InlineKeyboardButton("📋 Richiedi Lista", callback_data=f"{CB_MENU}richiedi")],
+                [InlineKeyboardButton("📋 Lista esistente", callback_data=f"{CB_ONBOARDING}existing")],
+                [InlineKeyboardButton("🎫 Crea Ticket", callback_data=f"{CB_TICKET}create")],
                 [InlineKeyboardButton("🏠 Menu", callback_data=f"{CB_MENU}main")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2248,7 +2280,7 @@ async def health_check(context: ContextTypes.DEFAULT_TYPE):
         # 4. Verifica rate limiter
         try:
             if rate_limiter:
-                rate_limiter.cleanup_old_entries()
+                rate_limiter.pulisci_rate_limits()
                 logger.info("✅ Health check: rate limiter OK")
         except Exception as e:
             logger.error(f"❌ Health check: errore rate limiter: {e}")
