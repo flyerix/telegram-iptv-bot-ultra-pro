@@ -1795,545 +1795,6 @@ admin_lista_handler = ConversationHandler(
 )
 
 
-# ConversationHandler per rifiuto richiesta con motivazione
-rifiuto_handler = ConversationHandler(
-    entry_points=[CallbackQueryHandler(handle_callback_accoppiamento, pattern=f"^{CB_ACCOPPIAMENTO}rifiuta_")],
-    states={
-        RIFIUTO_MOTIVAZIONE: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, rifiuto_motivazione_receive)
-        ]
-    },
-    fallbacks=[CommandHandler("cancel", ticket_cancel)],
-    name="rifiuto_conversation",
-    persistent=False
-)
-
-
-async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gestisce callback admin."""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    user_id = update.effective_user.id
-    
-    if user_id not in ADMIN_IDS:
-        await query.answer("❌ Non autorizzato", show_alert=True)
-        return
-    
-    # Gestisci vari callback admin
-    if data == f"{CB_ADMIN}menu":
-        # Mostra menu admin
-        keyboard = [
-            [
-                InlineKeyboardButton("📋 Gestione Richieste", callback_data=f"{CB_ADMIN}richieste"),
-                InlineKeyboardButton("🎫 Gestione Ticket", callback_data=f"{CB_ADMIN}ticket")
-            ],
-            [
-                InlineKeyboardButton("💾 Gestione Backup", callback_data=f"{CB_ADMIN}backup"),
-                InlineKeyboardButton("📊 Statistiche", callback_data=f"{CB_ADMIN}stats")
-            ],
-            [
-                InlineKeyboardButton("🔧 Manutenzione", callback_data=f"{CB_ADMIN}manutenzione"),
-                InlineKeyboardButton("📡 Stato Servizio", callback_data=f"{CB_ADMIN}stato_servizio")
-            ],
-            [
-                InlineKeyboardButton("📺 Gestione Liste", callback_data=f"{CB_ADMIN}liste")
-            ],
-            [
-                InlineKeyboardButton("🏠 Menu Principale", callback_data=f"{CB_MENU}main")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            "⚙️ <b>Menu Admin</b>",
-            reply_markup=reply_markup,
-            parse_mode=constants.ParseMode.HTML
-        )
-    
-    elif data == f"{CB_ADMIN}liste":
-        # Gestione Liste IPTV
-        try:
-            liste = user_management.get_tutte_liste()
-            
-            text = "📺 <b>Gestione Liste IPTV</b>\n\n"
-            
-            if liste and len(liste) > 0:
-                for lista in liste:
-                    text += f"• <b>{lista.get('nome')}</b> - {lista.get('stato', 'inattiva')}\n"
-                    text += f"  💰 {lista.get('costo', 'N/A')} - 📅 {lista.get('data_scadenza', 'N/A')}\n"
-            else:
-                text += "Nessuna lista configurata."
-            
-            keyboard = [
-                [InlineKeyboardButton("➕ Aggiungi Lista", callback_data=f"{CB_ADMIN}lista_nuova")],
-                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
-        except Exception as e:
-            logger.error(f"Errore gestione liste: {e}")
-            await query.answer(f"Errore: {e}", show_alert=True)
-    
-    elif data == f"{CB_ADMIN}stato_servizio":
-        # Menu Stato Servizio
-        current_stato = stato_servizio.get_stato()
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ Operativo", callback_data=f"{CB_ADMIN}stato_op"),
-                InlineKeyboardButton("🟡 Problemi", callback_data=f"{CB_ADMIN}stato_prob")
-            ],
-            [
-                InlineKeyboardButton("🔴 Disservizio", callback_data=f"{CB_ADMIN}stato_dis"),
-                InlineKeyboardButton("🔧 Manutenzione", callback_data=f"{CB_ADMIN}stato_mnt")
-            ],
-            [
-                InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            f"📡 <b>Stato Servizio</b>\n\nStato attuale: <b>{current_stato}</b>\n\nSeleziona il nuovo stato:",
-            reply_markup=reply_markup,
-            parse_mode=constants.ParseMode.HTML
-        )
-    
-    elif data == f"{CB_ADMIN}manutenzione":
-        # Menu Manutenzione
-        is_active = manutenzione.is_manutenzione_attiva()
-        
-        if is_active:
-            keyboard = [
-                [
-                    InlineKeyboardButton("🔴 Disattiva Manutenzione", callback_data=f"{CB_ADMIN}manutenzione_disattiva")
-                ],
-                [
-                    InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")
-                ]
-            ]
-            msg = "🔧 <b>Manutenzione</b>\n\n⚠️ La manutenzione è <b>ATTIVA</b>\n\nGli utenti normali non possono usare il bot."
-        else:
-            keyboard = [
-                [
-                    InlineKeyboardButton("🔧 Attiva Manutenzione", callback_data=f"{CB_ADMIN}manutenzione_attiva")
-                ],
-                [
-                    InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")
-                ]
-            ]
-            msg = "🔧 <b>Manutenzione</b>\n\n✅ La manutenzione è <b>INATTIVA</b>\n\nIl bot funziona normalmente."
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            msg,
-            reply_markup=reply_markup,
-            parse_mode=constants.ParseMode.HTML
-        )
-    
-    elif data == f"{CB_ADMIN}manutenzione_disattiva":
-        # Disattiva manutenzione
-        manutenzione.disattiva_manutenzione(str(user_id))
-        await query.answer("✅ Manutenzione disattivata!", show_alert=True)
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("🔧 Attiva Manutenzione", callback_data=f"{CB_ADMIN}manutenzione_attiva")
-            ],
-            [
-                InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            "🔧 <b>Manutenzione</b>\n\n✅ La manutenzione è stata <b>DISATTIVATA</b>",
-            reply_markup=reply_markup,
-            parse_mode=constants.ParseMode.HTML
-        )
-    
-    elif data == f"{CB_ADMIN}ticket":
-        # Menu Gestione Ticket
-        ticket_aperti = ticket_system.get_tutti_ticket(stato="aperto")
-        
-        text = "🎫 <b>Gestione Ticket</b>\n\n"
-        
-        if ticket_aperti:
-            text += f"📊 Ticket aperti: {len(ticket_aperti)}\n\n"
-            for ticket in ticket_aperti[:5]:
-                prio_emoji = "🔴" if ticket.get("priorita") == "alta" else "🟡"
-                text += f"{prio_emoji} #{ticket.get('id', '')[:8]} - {ticket.get('titolo', 'Senza titolo')[:30]}\n"
-        else:
-            text += "📭 Nessun ticket aperto."
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}ticket_refresh")],
-            [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            text,
-            reply_markup=reply_markup,
-            parse_mode=constants.ParseMode.HTML
-        )
-    
-    elif data == f"{CB_ADMIN}ticket_refresh":
-        # Refresh ticket - same as ticket menu
-        try:
-            ticket_aperti = ticket_system.get_tutti_ticket(stato="aperto")
-            
-            text = "🎫 <b>Gestione Ticket</b>\n\n"
-            
-            if ticket_aperti:
-                text += f"📊 Ticket aperti: {len(ticket_aperti)}\n\n"
-                for ticket in ticket_aperti[:5]:
-                    prio_emoji = "🔴" if ticket.get("priorita") == "alta" else "🟡"
-                    text += f"{prio_emoji} #{ticket.get('id', '')[:8]} - {ticket.get('titolo', 'Senza titolo')[:30]}\n"
-            else:
-                text += "📭 Nessun ticket aperto."
-            
-            keyboard = [
-                [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}ticket_refresh")],
-                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(
-                text,
-                reply_markup=reply_markup,
-                parse_mode=constants.ParseMode.HTML
-            )
-        except Exception as e:
-            logger.error(f"Errore ticket_refresh: {e}")
-            keyboard = [
-                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                f"❌ Errore nel recupero ticket: {e}",
-                reply_markup=reply_markup,
-                parse_mode=constants.ParseMode.HTML
-            )
-    
-    elif data == f"{CB_ADMIN}richieste":
-        # Mostra richieste
-        richieste = user_management.get_richieste_in_attesa()
-        
-        if not richieste:
-            keyboard = [
-                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text("📭 Nessuna richiesta in attesa.", reply_markup=reply_markup)
-            return
-        
-        text = "📋 <b>Richieste in attesa:</b>\n\n"
-        
-        for richiesta in richieste[:5]:
-            text += f"🆔 {richiesta.get('user_id')}\n"
-            text += f"📅 {richiesta.get('data_richiesta')}\n"
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅", callback_data=f"{CB_ADMIN}approva_{richiesta.get('id')}"),
-                    InlineKeyboardButton("❌", callback_data=f"{CB_ADMIN}rifiuta_{richiesta.get('id')}")
-                ]
-            ]
-            
-            await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=constants.ParseMode.HTML)
-            text = "----\n"
-    
-    elif data.startswith(f"{CB_ADMIN}approva_"):
-        richiesta_id = data.replace(f"{CB_ADMIN}approva_", "")
-        # Approva richiesta
-        user_management.approva_richiesta(richiesta_id, str(user_id))
-        
-        await query.answer("✅ Richiesta approvata!", show_alert=True)
-        await query.edit_message_text(f"✅ Richiesta {richiesta_id[:8]} approvata.")
-    
-    elif data.startswith(f"{CB_ADMIN}rifiuta_"):
-        richiesta_id = data.replace(f"{CB_ADMIN}rifiuta_", "")
-        # Rifiuta richiesta
-        user_management.rifiuta_richiesta(richiesta_id, str(user_id), "Rifiutato dall'admin")
-        
-        await query.answer("❌ Richiesta rifiutata.", show_alert=True)
-        await query.edit_message_text(f"❌ Richiesta {richiesta_id[:8]} rifiutata.")
-    
-    elif data == f"{CB_ADMIN}backup_create":
-        # Crea backup
-        try:
-            backup_path = backup_system.crea_backup()
-            
-            keyboard = [
-                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(
-                f"✅ <b>Backup creato!</b>\n\n"
-                f"📁 File: {backup_path}",
-                reply_markup=reply_markup,
-                parse_mode=constants.ParseMode.HTML
-            )
-        except Exception as e:
-            keyboard = [
-                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(f"❌ Errore backup: {e}", reply_markup=reply_markup)
-    
-    elif data == f"{CB_ADMIN}stats":
-        # Mostra statistiche in modo ordinato
-        try:
-            stats_data = user_management.get_statistiche()
-            
-            stats_text = """📊 <b>Statistiche HelperBot</b>
-
-📈 <b>Utenti:</b>
-• Totali: {totale_utenti}
-• Attivi: {utenti_attivi}
-• Con lista: {utenti_con_lista}
-
-📺 <b>Liste IPTV:</b>
-• Totali: {totale_liste}
-• Attive: {liste_attive}
-
-📋 <b>Richieste:</b>
-• Totali: {totale_richieste}
-• In attesa: {richieste_pendenti}
-• Approvate: {richieste_approvate}
-• Rifiutate: {richieste_rifiutate}""".format(**stats_data)
-            
-            # Evita errore "Message is not modified"
-            current_msg = query.message.text if query.message else ""
-            if current_msg.strip() == stats_text.strip():
-                await query.answer("Statistiche già aggiornate!", show_alert=False)
-                return
-            
-            keyboard = [
-                [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}stats")],
-                [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(
-                stats_text,
-                reply_markup=reply_markup,
-                parse_mode=constants.ParseMode.HTML
-            )
-        except Exception as e:
-            if "Message is not modified" in str(e):
-                await query.answer("Statistiche già aggiornate!", show_alert=False)
-            else:
-                logger.error(f"Errore stats: {e}")
-                keyboard = [
-                    [InlineKeyboardButton("🔙 Indietro", callback_data=f"{CB_ADMIN}menu")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_text(
-                    f"❌ Errore nel recupero statistiche: {e}",
-                    reply_markup=reply_markup,
-                    parse_mode=constants.ParseMode.HTML
-                )
-    
-    elif data == f"{CB_ADMIN}manutenzione_attiva":
-        # Attiva manutenzione
-        manutenzione.attiva_manutenzione(str(user_id), "Manutenzione programmata")
-        await query.edit_message_text(
-            "🔧 <b>Manutenzione attivata</b>\n\nGli utenti normali sono bloccati.",
-            parse_mode=constants.ParseMode.HTML
-        )
-    
-    elif data.startswith(f"{CB_ADMIN}stato_"):
-        stato = data.replace(f"{CB_ADMIN}stato_", "")
-        stato_mapping = {
-            "op": STATO_OPERATIVO,
-            "prob": STATO_PROBLEMI,
-            "dis": "DISSERVIZIO",
-            "mnt": "MANUTENZIONE"
-        }
-        
-        if stato in stato_mapping:
-            stato_servizio.aggiorna_stato(stato_mapping[stato], f"Admin {user_id}")
-            await query.edit_message_text(
-                f"✅ Stato aggiornato a: <b>{stato_mapping[stato]}</b>",
-                parse_mode=constants.ParseMode.HTML
-            )
-    
-    elif data == f"{CB_ADMIN}lista_nuova":
-        return
-
-
-async def handle_callback_accoppiamento(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gestisce callback per l'accoppiamento lista-utente."""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    user_id = str(update.effective_user.id)
-    
-    if user_id not in ADMIN_IDS:
-        await query.answer("❌ Non autorizzato", show_alert=True)
-        return
-    
-    if data.startswith(f"{CB_ACCOPPIAMENTO}approva_"):
-        richiesta_id = data.replace(f"{CB_ACCOPPIAMENTO}approva_", "")
-        
-        richiesta = user_management.get_richiesta(richiesta_id)
-        if not richiesta:
-            await query.answer("❌ Richiesta non trovata", show_alert=True)
-            return
-        
-        success, msg = user_management.approva_richiesta(richiesta_id, str(user_id))
-        
-        if success:
-            nome_lista = richiesta.get("nome_lista", "")
-            user_id_utente = richiesta.get("user_id")
-            
-            success_assegna, msg_assegna = user_management.assegna_lista_by_name(user_id_utente, nome_lista)
-            
-            if success_assegna:
-                await query.edit_message_text(
-                    f"✅ <b>Accoppiamento approvato!</b>\n\n"
-                    f"Richiesta: {richiesta_id[:8]}\n"
-                    f"Utente: {user_id_utente}\n"
-                    f"Lista: {nome_lista}",
-                    parse_mode=constants.ParseMode.HTML
-                )
-                
-                try:
-                    admin_id = ADMIN_IDS[0] if ADMIN_IDS else None
-                    if admin_id:
-                        await app.bot.send_message(
-                            chat_id=int(user_id_utente),
-                            text=f"✅ <b>Accoppiamento approvato!</b>\n\n"
-                                 f"La tua richiesta per la lista «{nome_lista}» è stata approvata.\n\n"
-                                 f"Contatta l'amministratore: tg://user?id={admin_id}",
-                            parse_mode=constants.ParseMode.HTML
-                        )
-                except Exception as e:
-                    logger.error(f"Errore notifica utente: {e}")
-            else:
-                await query.edit_message_text(
-                    f"⚠️ Richiesta approvata ma errore nell'assegnazione: {msg_assegna}",
-                    parse_mode=constants.ParseMode.HTML
-                )
-        else:
-            await query.edit_message_text(f"❌ Errore: {msg}", parse_mode=constants.ParseMode.HTML)
-    
-    elif data.startswith(f"{CB_ACCOPPIAMENTO}rifiuta_"):
-        richiesta_id = data.replace(f"{CB_ACCOPPIAMENTO}rifiuta_", "")
-        
-        context.user_data["rifiuto_richiesta_id"] = richiesta_id
-        
-        await query.edit_message_text(
-            f"📝 <b>Inserisci motivazione rifiuto</b>\n\n"
-            f"Per la richiesta: {richiesta_id[:8]}\n\n"
-            f"Invia il motivo del rifiuto. L'utente verrà notificato.\n\n"
-            f"Usa /cancel per annullare.",
-            parse_mode=constants.ParseMode.HTML
-        )
-        return RIFIUTO_MOTIVAZIONE
-    
-    elif data.startswith(f"{CB_ACCOPPIAMENTO}ticket_"):
-        richiesta_id = data.replace(f"{CB_ACCOPPIAMENTO}ticket_", "")
-        
-        richiesta = user_management.get_richiesta(richiesta_id)
-        if not richiesta:
-            await query.answer("❌ Richiesta non trovata", show_alert=True)
-            return
-        
-        user_id_utente = richiesta.get("user_id")
-        nome_lista = richiesta.get("nome_lista", "")
-        motivazione = richiesta.get("motivo_rifiuto", "N/A")
-        
-        ticket = ticket_system.crea_ticket(
-            user_id=user_id_utente,
-            problema=f"Richiesta accoppiamento lista rifiutata – desidero assistenza\n\nLista: {nome_lista}\nMotivo: {motivazione}",
-            categoria="media"
-        )
-        
-        if ticket:
-            await notifica_admin_ticket(ticket)
-            
-            keyboard = [
-                [InlineKeyboardButton("🏠 Menu Principale", callback_data=f"{CB_MENU}main")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(
-                f"✅ <b>Ticket creato!</b>\n\n"
-                f"🎫 Ticket #{ticket.get('id', '')[:8]}\n\n"
-                "Un admin ti risponderà al più presto.",
-                reply_markup=reply_markup,
-                parse_mode=constants.ParseMode.HTML
-            )
-        else:
-            await query.edit_message_text(
-                "❌ Errore nella creazione del ticket.",
-                parse_mode=constants.ParseMode.HTML
-            )
-
-
-async def rifiuto_motivazione_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Riceve la motivazione del rifiuto e notifica l'utente."""
-    motivazione = update.message.text
-    user_id = str(update.effective_user.id)
-    richiesta_id = context.user_data.get("rifiuto_richiesta_id")
-    
-    if not richiesta_id:
-        await update.message.reply_text(
-            "❌ Nessuna richiesta da rifiutare.",
-            parse_mode=constants.ParseMode.HTML
-        )
-        return ConversationHandler.END
-    
-    richiesta = user_management.get_richiesta(richiesta_id)
-    if not richiesta:
-        await update.message.reply_text(
-            "❌ Richiesta non trovata.",
-            parse_mode=constants.ParseMode.HTML
-        )
-        context.user_data.pop("rifiuto_richiesta_id", None)
-        return ConversationHandler.END
-    
-    success, msg = user_management.rifiuta_richiesta(richiesta_id, str(user_id), motivazione)
-    
-    if success:
-        user_id_utente = richiesta.get("user_id")
-        nome_lista = richiesta.get("nome_lista", "")
-        
-        await update.message.reply_text(
-            f"✅ Richiesta {richiesta_id[:8]} rifiutata.\nL'utente è stato notificato.",
-            parse_mode=constants.ParseMode.HTML
-        )
-        
-        try:
-            keyboard = [
-                [InlineKeyboardButton("🎫 Apri ticket assistenza", callback_data=f"{CB_ACCOPPIAMENTO}ticket_{richiesta_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await app.bot.send_message(
-                chat_id=int(user_id_utente),
-                text=f"❌ <b>Richiesta accoppiamento rifiutata</b>\n\n"
-                     f"Motivo: {motivazione}",
-                reply_markup=reply_markup,
-                parse_mode=constants.ParseMode.HTML
-            )
-        except Exception as e:
-            logger.error(f"Errore notifica utente rifiuto: {e}")
-    else:
-        await update.message.reply_text(f"❌ Errore: {msg}", parse_mode=constants.ParseMode.HTML)
-    
-    context.user_data.pop("rifiuto_richiesta_id", None)
-    return ConversationHandler.END
-
 
 async def handle_callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gestisce callback menu."""
@@ -2777,6 +2238,176 @@ async def job_pulizia_dati(context: ContextTypes.DEFAULT_TYPE):
         logger.info("Pulizia dati completata")
     except Exception as e:
         logger.error(f"Errore pulizia dati: {e}")
+
+
+async def handle_callback_accoppiamento(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gestisce callback per l'accoppiamento lista-utente."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    user_id = str(update.effective_user.id)
+    
+    if user_id not in ADMIN_IDS:
+        await query.answer("❌ Non autorizzato", show_alert=True)
+        return
+    
+    if data.startswith(f"{CB_ACCOPPIAMENTO}approva_"):
+        richiesta_id = data.replace(f"{CB_ACCOPPIAMENTO}approva_", "")
+        
+        richiesta = user_management.get_richiesta(richiesta_id)
+        if not richiesta:
+            await query.answer("❌ Richiesta non trovata", show_alert=True)
+            return
+        
+        success, msg = user_management.approva_richiesta(richiesta_id, str(user_id))
+        
+        if success:
+            nome_lista = richiesta.get("nome_lista", "")
+            user_id_utente = richiesta.get("user_id")
+            
+            success_assegna, msg_assegna = user_management.assegna_lista_by_name(user_id_utente, nome_lista)
+            
+            if success_assegna:
+                await query.edit_message_text(
+                    f"✅ <b>Accoppiamento approvato!</b>\n\n"
+                    f"Richiesta: {richiesta_id[:8]}\n"
+                    f"Utente: {user_id_utente}\n"
+                    f"Lista: {nome_lista}",
+                    parse_mode=constants.ParseMode.HTML
+                )
+                
+                try:
+                    admin_id = ADMIN_IDS[0] if ADMIN_IDS else None
+                    if admin_id:
+                        await app.bot.send_message(
+                            chat_id=int(user_id_utente),
+                            text=f"✅ <b>Accoppiamento approvato!</b>\n\n"
+                                 f"La lista '{nome_lista}' è stata associata al tuo account.",
+                            parse_mode=constants.ParseMode.HTML
+                        )
+                except Exception as e:
+                    logger.error(f"Errore notifica utente: {e}")
+            else:
+                await query.edit_message_text(
+                    f"⚠️ Richiesta approvata ma errore assegnazione lista: {msg_assegna}",
+                    parse_mode=constants.ParseMode.HTML
+                )
+        else:
+            await query.edit_message_text(f"❌ Errore: {msg}", parse_mode=constants.ParseMode.HTML)
+    
+    elif data.startswith(f"{CB_ACCOPPIAMENTO}rifiuta_"):
+        richiesta_id = data.replace(f"{CB_ACCOPPIAMENTO}rifiuta_", "")
+        
+        context.user_data["rifiuto_richiesta_id"] = richiesta_id
+        
+        await query.edit_message_text(
+            f"⚠️ Inserisci la motivazione del rifiuto per la richiesta {richiesta_id[:8]}:",
+            parse_mode=constants.ParseMode.HTML
+        )
+        
+        return RIFIUTO_MOTIVAZIONE
+    
+    elif data.startswith(f"{CB_ACCOPPIAMENTO}ticket_"):
+        richiesta_id = data.replace(f"{CB_ACCOPPIAMENTO}ticket_", "")
+        
+        richiesta = user_management.get_richiesta(richiesta_id)
+        if not richiesta:
+            await query.answer("❌ Richiesta non trovata", show_alert=True)
+            return
+        
+        user_id_utente = richiesta.get("user_id")
+        nome_lista = richiesta.get("nome_lista", "")
+        
+        ticket_data = {
+            "user_id": user_id_utente,
+            "tipo": "richiesta_accoppiamento",
+            "richiesta_id": richiesta_id,
+            "nome_lista": nome_lista
+        }
+        
+        success, ticket_id = ticket_system.crea_ticket(ticket_data)
+        
+        if success:
+            await query.edit_message_text(
+                f"🎫 Ticket creato per richiesta {richiesta_id[:8]}",
+                parse_mode=constants.ParseMode.HTML
+            )
+        else:
+            await query.edit_message_text(
+                "❌ Errore nella creazione del ticket.",
+                parse_mode=constants.ParseMode.HTML
+            )
+
+
+async def rifiuto_motivazione_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Riceve la motivazione del rifiuto e notifica l'utente."""
+    motivazione = update.message.text
+    user_id = str(update.effective_user.id)
+    richiesta_id = context.user_data.get("rifiuto_richiesta_id")
+    
+    if not richiesta_id:
+        await update.message.reply_text(
+            "❌ Nessuna richiesta da rifiutare.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        return ConversationHandler.END
+    
+    richiesta = user_management.get_richiesta(richiesta_id)
+    if not richiesta:
+        await update.message.reply_text(
+            "❌ Richiesta non trovata.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        context.user_data.pop("rifiuto_richiesta_id", None)
+        return ConversationHandler.END
+    
+    success, msg = user_management.rifiuta_richiesta(richiesta_id, str(user_id), motivazione)
+    
+    if success:
+        user_id_utente = richiesta.get("user_id")
+        nome_lista = richiesta.get("nome_lista", "")
+        
+        await update.message.reply_text(
+            f"✅ Richiesta {richiesta_id[:8]} rifiutata.\nL'utente è stato notificato.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        
+        try:
+            keyboard = [
+                [InlineKeyboardButton("🎫 Apri ticket assistenza", callback_data=f"{CB_ACCOPPIAMENTO}ticket_{richiesta_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await app.bot.send_message(
+                chat_id=int(user_id_utente),
+                text=f"❌ <b>Richiesta accoppiamento rifiutata</b>\n\n"
+                     f"Lista: {nome_lista}\n"
+                     f"Motivazione: {motivazione}",
+                reply_markup=reply_markup,
+                parse_mode=constants.ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Errore notifica utente rifiuto: {e}")
+    else:
+        await update.message.reply_text(f"❌ Errore: {msg}", parse_mode=constants.ParseMode.HTML)
+    
+    context.user_data.pop("rifiuto_richiesta_id", None)
+    return ConversationHandler.END
+
+
+# ConversationHandler per rifiuto richiesta con motivazione
+rifiuto_handler = ConversationHandler(
+    entry_points=[CallbackQueryHandler(handle_callback_accoppiamento, pattern=f"^{CB_ACCOPPIAMENTO}rifiuta_")],
+    states={
+        RIFIUTO_MOTIVAZIONE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, rifiuto_motivazione_receive)
+        ]
+    },
+    fallbacks=[CommandHandler("cancel", ticket_cancel)],
+    name="rifiuto_conversation",
+    persistent=False
+)
 
 
 # ==================== MAIN ====================
