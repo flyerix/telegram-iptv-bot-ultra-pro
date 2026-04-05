@@ -2340,6 +2340,302 @@ async def handle_callback_accoppiamento(update: Update, context: ContextTypes.DE
             )
 
 
+async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gestisce callback per le azioni admin."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    user_id = str(update.effective_user.id)
+    
+    if user_id not in ADMIN_IDS:
+        await query.answer("❌ Non autorizzato", show_alert=True)
+        return
+    
+    if data == f"{CB_ADMIN}menu":
+        keyboard = [
+            [
+                InlineKeyboardButton("📋 Gestione Richieste", callback_data=f"{CB_ADMIN}richieste"),
+                InlineKeyboardButton("🎫 Gestione Ticket", callback_data=f"{CB_ADMIN}ticket")
+            ],
+            [
+                InlineKeyboardButton("💾 Gestione Backup", callback_data=f"{CB_ADMIN}backup"),
+                InlineKeyboardButton("📊 Statistiche", callback_data=f"{CB_ADMIN}stats")
+            ],
+            [
+                InlineKeyboardButton("🔧 Manutenzione", callback_data=f"{CB_ADMIN}manutenzione"),
+                InlineKeyboardButton("📡 Stato Servizio", callback_data=f"{CB_ADMIN}stato")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "⚙️ <b>Menu Admin</b>",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}richieste":
+        richieste = user_management.get_richieste_in_attesa()
+        
+        if not richieste:
+            await query.edit_message_text(
+                "📭 <b>Nessuna richiesta in attesa</b>",
+                parse_mode=constants.ParseMode.HTML
+            )
+            return
+        
+        text = "📋 <b>Richieste in attesa:</b>\n\n"
+        
+        for richiesta in richieste[:10]:
+            text += f"🆔 <b>{richiesta.get('user_id')}</b>\n"
+            text += f"👤 {richiesta.get('username', 'N/A')}\n"
+            text += f"📅 {richiesta.get('data_richiesta')}\n"
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Approva", callback_data=f"{CB_ADMIN}approva_{richiesta.get('id')}"),
+                    InlineKeyboardButton("❌ Rifiuta", callback_data=f"{CB_ADMIN}rifiuta_{richiesta.get('id')}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
+            text = "📋 <b>Prossima richiesta:</b>\n\n"
+    
+    elif data == f"{CB_ADMIN}ticket":
+        tickets = ticket_system.get_tickets_stato("aperto")
+        
+        if not tickets:
+            await query.edit_message_text(
+                "🎫 <b>Nessun ticket aperto</b>",
+                parse_mode=constants.ParseMode.HTML
+            )
+            return
+        
+        text = "🎫 <b>Ticket aperti:</b>\n\n"
+        
+        for ticket in tickets[:10]:
+            text += f"🆔 {ticket.get('id')}\n"
+            text += f"👤 {ticket.get('user_id')}\n"
+            text += f"📝 {ticket.get('messaggio', '')[:50]}...\n"
+            text += f"📅 {ticket.get('data_creazione')}\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"{CB_ADMIN}ticket_refresh")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=constants.ParseMode.HTML)
+    
+    elif data == f"{CB_ADMIN}backup":
+        keyboard = [
+            [
+                InlineKeyboardButton("💾 Crea Backup Ora", callback_data=f"{CB_ADMIN}backup_create"),
+                InlineKeyboardButton("📥 Ripristina Backup", callback_data=f"{CB_ADMIN}backup_restore")
+            ],
+            [
+                InlineKeyboardButton("☁️ Upload Drive", callback_data=f"{CB_ADMIN}backup_drive_upload"),
+                InlineKeyboardButton("☁️ Download Drive", callback_data=f"{CB_ADMIN}backup_drive_download")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "💾 <b>Gestione Backup</b>",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}stats":
+        stats_text = statistiche.genera_report_completo()
+        
+        await query.edit_message_text(
+            f"📊 <b>Statistiche HelperBot</b>\n\n{stats_text}",
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}manutenzione":
+        if manutenzione.is_manutenzione_attiva():
+            keyboard = [
+                [InlineKeyboardButton("❌ Disattiva Manutenzione", callback_data=f"{CB_ADMIN}manutenzione_disattiva")]
+            ]
+        else:
+            keyboard = [
+                [InlineKeyboardButton("🔧 Attiva Manutenzione", callback_data=f"{CB_ADMIN}manutenzione_attiva")]
+            ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        stato = "🔴 <b>ATTIVA</b>" if manutenzione.is_manutenzione_attiva() else "🟢 <b>NON ATTIVA</b>"
+        
+        await query.edit_message_text(
+            f"🔧 <b>Manutenzione</b>\n\nStato: {stato}",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}stato":
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Operativo", callback_data=f"{CB_ADMIN}stato_op"),
+                InlineKeyboardButton("🟡 Problemi", callback_data=f"{CB_ADMIN}stato_prob")
+            ],
+            [
+                InlineKeyboardButton("🔴 Disservizio", callback_data=f"{CB_ADMIN}stato_dis"),
+                InlineKeyboardButton("🔧 Manutenzione", callback_data=f"{CB_ADMIN}stato_mnt")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "📡 <b>Aggiorna Stato Servizio</b>",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data.startswith(f"{CB_ADMIN}approva_"):
+        richiesta_id = data.replace(f"{CB_ADMIN}approva_", "")
+        
+        richiesta = user_management.get_richiesta(richiesta_id)
+        if not richiesta:
+            await query.answer("❌ Richiesta non trovata", show_alert=True)
+            return
+        
+        success, msg = user_management.approva_richiesta(richiesta_id, str(user_id))
+        
+        if success:
+            nome_lista = richiesta.get("nome_lista", "")
+            user_id_utente = richiesta.get("user_id")
+            
+            success_assegna, msg_assegna = user_management.assegna_lista_by_name(user_id_utente, nome_lista)
+            
+            if success_assegna:
+                await query.edit_message_text(
+                    f"✅ <b>Richiesta approvata!</b>\n\n"
+                    f"Richiesta: {richiesta_id[:8]}\n"
+                    f"Utente: {user_id_utente}\n"
+                    f"Lista: {nome_lista}",
+                    parse_mode=constants.ParseMode.HTML
+                )
+                
+                try:
+                    await app.bot.send_message(
+                        chat_id=int(user_id_utente),
+                        text=f"✅ <b>Richiesta approvata!</b>\n\n"
+                             f"La lista '{nome_lista}' è stata associata al tuo account.",
+                        parse_mode=constants.ParseMode.HTML
+                    )
+                except Exception as e:
+                    logger.error(f"Errore notifica utente: {e}")
+            else:
+                await query.edit_message_text(
+                    f"⚠️ Richiesta approvata ma errore: {msg_assegna}",
+                    parse_mode=constants.ParseMode.HTML
+                )
+        else:
+            await query.edit_message_text(f"❌ Errore: {msg}", parse_mode=constants.ParseMode.HTML)
+    
+    elif data.startswith(f"{CB_ADMIN}rifiuta_"):
+        richiesta_id = data.replace(f"{CB_ADMIN}rifiuta_", "")
+        
+        context.user_data["rifiuto_richiesta_id"] = richiesta_id
+        
+        await query.edit_message_text(
+            f"⚠️ Inserisci la motivazione del rifiuto per la richiesta {richiesta_id[:8]}:",
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}manutenzione_attiva":
+        manutenzione.attiva_manutenzione(str(user_id))
+        
+        keyboard = [
+            [InlineKeyboardButton("❌ Disattiva Manutenzione", callback_data=f"{CB_ADMIN}manutenzione_disattiva")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "✅ <b>Manutenzione attivata</b>\n\nGli utenti normali non possono più usare il bot.",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}manutenzione_disattiva":
+        manutenzione.disattiva_manutenzione(str(user_id))
+        
+        keyboard = [
+            [InlineKeyboardButton("🔧 Attiva Manutenzione", callback_data=f"{CB_ADMIN}manutenzione_attiva")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "✅ <b>Manutenzione disattivata</b>\n\nIl bot è tornato operativo.",
+            reply_markup=reply_markup,
+            parse_mode=constants.ParseMode.HTML
+        )
+    
+    elif data == f"{CB_ADMIN}stato_op":
+        try:
+            from gestore_canali import aggiorna_stato_servizio
+            aggiorna_stato_servizio("operativo")
+            await query.edit_message_text(
+                "✅ <b>Stato servizio aggiornato: Operativo</b>",
+                parse_mode=constants.ParseMode.HTML
+            )
+        except Exception as e:
+            await query.edit_message_text(f"❌ Errore: {str(e)}", parse_mode=constants.ParseMode.HTML)
+    
+    elif data == f"{CB_ADMIN}stato_prob":
+        try:
+            from gestore_canali import aggiorna_stato_servizio
+            aggiorna_stato_servizio("problemi")
+            await query.edit_message_text(
+                "🟡 <b>Stato servizio aggiornato: Problemi</b>",
+                parse_mode=constants.ParseMode.HTML
+            )
+        except Exception as e:
+            await query.edit_message_text(f"❌ Errore: {str(e)}", parse_mode=constants.ParseMode.HTML)
+    
+    elif data == f"{CB_ADMIN}stato_dis":
+        try:
+            from gestore_canali import aggiorna_stato_servizio
+            aggiorna_stato_servizio("disservizio")
+            await query.edit_message_text(
+                "🔴 <b>Stato servizio aggiornato: Disservizio</b>",
+                parse_mode=constants.ParseMode.HTML
+            )
+        except Exception as e:
+            await query.edit_message_text(f"❌ Errore: {str(e)}", parse_mode=constants.ParseMode.HTML)
+    
+    elif data == f"{CB_ADMIN}stato_mnt":
+        try:
+            from gestore_canali import aggiorna_stato_servizio
+            aggiorna_stato_servizio("manutenzione")
+            await query.edit_message_text(
+                "🔧 <b>Stato servizio aggiornato: Manutenzione</b>",
+                parse_mode=constants.ParseMode.HTML
+            )
+        except Exception as e:
+            await query.edit_message_text(f"❌ Errore: {str(e)}", parse_mode=constants.ParseMode.HTML)
+    
+    elif data == f"{CB_ADMIN}backup_create":
+        try:
+            from backup_system import esegui_backup
+            backup_file = esegui_backup()
+            
+            if backup_file:
+                await query.edit_message_text(
+                    f"✅ <b>Backup creato!</b>\n\nFile: {backup_file}",
+                    parse_mode=constants.ParseMode.HTML
+                )
+            else:
+                await query.edit_message_text(
+                    "❌ Errore nella creazione del backup.",
+                    parse_mode=constants.ParseMode.HTML
+                )
+        except Exception as e:
+            await query.edit_message_text(f"❌ Errore: {str(e)}", parse_mode=constants.ParseMode.HTML)
+
+
 async def rifiuto_motivazione_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Riceve la motivazione del rifiuto e notifica l'utente."""
     motivazione = update.message.text
