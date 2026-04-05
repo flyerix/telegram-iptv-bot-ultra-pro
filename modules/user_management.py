@@ -440,6 +440,48 @@ class UserManagement:
             logger.error(f"Errore nella revoca della lista per {user_id}: {e}")
             return False
     
+    def get_lista_by_name(self, nome: str) -> Optional[Dict[str, Any]]:
+        """
+        Ottiene i dati di una lista IPTV cercandola per nome.
+        
+        Args:
+            nome: Nome della lista
+            
+        Returns:
+            Dizionario con i dati della lista o None se non trovata
+        """
+        try:
+            tutte_liste = self.get_tutte_liste()
+            for lista in tutte_liste:
+                if lista.get("nome", "").lower() == nome.lower():
+                    return lista
+            return None
+        except Exception as e:
+            logger.error(f"Errore nella ricerca della lista per nome {nome}: {e}")
+            return None
+    
+    def assegna_lista_by_name(self, user_id: str, nome_lista: str) -> Tuple[bool, str]:
+        """
+        Assegna una lista IPTV a un utente cercandola per nome.
+        
+        Args:
+            user_id: ID dell'utente
+            nome_lista: Nome della lista da assegnare
+            
+        Returns:
+            Tuple (successo, messaggio)
+        """
+        try:
+            lista = self.get_lista_by_name(nome_lista)
+            if not lista:
+                return False, f"Lista '{nome_lista}' non trovata"
+            
+            return self.assegna_lista(user_id, lista.get("id")), f"Lista '{nome_lista}' assegnata"
+            
+        except Exception as e:
+            logger.error(f"Errore nell'assegnazione della lista per nome a {user_id}: {e}")
+            return False, f"Errore: {e}"
+    
     def get_tutte_liste(self) -> List[Dict[str, Any]]:
         """
         Ottiene la lista di tutte le liste IPTV.
@@ -470,13 +512,14 @@ class UserManagement:
     
     # ==================== GESTIONE RICHIESTE ====================
     
-    def crea_richiesta(self, user_id: str, username: str = "", nome_lista: str = "") -> Dict[str, Any]:
+    def crea_richiesta(self, user_id: str, username: str = "", nome_lista: str = "", tipo: str = "lista") -> Dict[str, Any]:
         """
         Crea una nuova richiesta di lista IPTV.
         
         Args:
             user_id: ID dell'utente che fa la richiesta
             nome_lista: Nome o descrizione della lista richiesta
+            tipo: Tipo di richiesta ("lista" = nuova lista, "accoppiamento" = accoda lista esistente)
             
         Returns:
             Dizionario con i dati della richiesta creata
@@ -491,7 +534,7 @@ class UserManagement:
                 # Registra automaticamente l'utente
                 utente = self.registra_utente(user_id, f"user_{user_id}", f"Utente {user_id}")
             
-            # Controlla se l'utente ha già una richiesta pendente
+            # Controlla se l'utente ha già una richiesta pendente del stesso tipo
             richieste = self.get_richieste_pendenti()
             for richiesta in richieste:
                 if richiesta.get("user_id") == user_id and richiesta.get("stato") == STATO_IN_ATTESA:
@@ -507,6 +550,7 @@ class UserManagement:
                 "nome_utente": utente.get("nome", "sconosciuto"),
                 "nome_lista": nome_lista,
                 "stato": STATO_IN_ATTESA,
+                "tipo": tipo,
                 "data_richiesta": datetime.now().isoformat(),
                 "data_risposta": None,
                 "admin_id": None,

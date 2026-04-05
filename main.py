@@ -109,6 +109,8 @@ SELECT_PRIORITY, ENTER_DESCRIPTION, ENTER_LIST_NAME, CONFIRM = range(4)
 RICHIEDI_CHOICE, RICHIEDI_NOME = range(14, 16)
 # Stati per creazione lista admin
 ADMIN_LIST_NAME, ADMIN_LIST_COST, ADMIN_LIST_SCADENZA, ADMIN_LIST_NOTE = range(16, 20)
+# Stato per motivazione rifiuto
+RIFIUTO_MOTIVAZIONE = 20
 # Stati esistenti
 (
     STATE_START,
@@ -131,6 +133,7 @@ CB_ADMIN = "admin_"
 CB_STATO = "stato_"
 CB_RICHIESTA = "richiesta_"
 CB_RICHIEDI = "rich_"
+CB_ACCOPPIAMENTO = "accoppiamento_"
 
 # Health check config
 HEALTH_CHECK_INTERVAL = int(os.environ.get("HEALTH_CHECK_INTERVAL", "180"))  # 3 minuti
@@ -670,7 +673,7 @@ async def richiedi_choice_receive(update: Update, context: ContextTypes.DEFAULT_
     if query.data == "rich_esistente":
         await query.edit_message_text(
             "📺 <b>Inserisci nome lista</b>\n\n"
-            "Inserisci il nome della lista IPTV che vuoi monitorare:",
+            "Inserisci il nome della lista IPTV a cui vuoi essere associato:",
             parse_mode=constants.ParseMode.HTML
         )
         return RICHIEDI_NOME
@@ -713,19 +716,20 @@ async def richiedi_choice_receive(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def richiedi_nome_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Riceve il nome della lista e crea la richiesta."""
+    """Riceve il nome della lista e crea la richiesta di accoppiamento."""
     lista_nome = update.message.text
     user_id = str(update.effective_user.id)
     
     richiesta = user_management.crea_richiesta(
         user_id,
         update.effective_user.username or "",
-        lista_nome
+        lista_nome,
+        tipo="accoppiamento"
     )
     
     if richiesta:
         await update.message.reply_text(
-            f"✅ <b>Richiesta inviata!</b>\n\n"
+            f"✅ <b>Richiesta accoppiamento inviata!</b>\n\n"
             f"La tua richiesta per la lista «{lista_nome}» è stata inoltrata agli admin.",
             parse_mode=constants.ParseMode.HTML
         )
@@ -1791,6 +1795,20 @@ admin_lista_handler = ConversationHandler(
 )
 
 
+# ConversationHandler per rifiuto richiesta con motivazione
+rifiuto_handler = ConversationHandler(
+    entry_points=[CallbackQueryHandler(handle_callback_accoppiamento, pattern=f"^{CB_ACCOPPIAMENTO}rifiuta_")],
+    states={
+        RIFIUTO_MOTIVAZIONE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, rifiuto_motivazione_receive)
+        ]
+    },
+    fallbacks=[CommandHandler("cancel", ticket_cancel)],
+    name="rifiuto_conversation",
+    persistent=False
+)
+
+
 async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gestisce callback admin."""
     query = update.callback_query
@@ -2151,6 +2169,172 @@ async def handle_callback_admin(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
 
+async def handle_callback_accoppiamento(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gestisce callback per l'accoppiamento lista-utente."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    user_id = str(update.effective_user.id)
+    
+    if user_id not in ADMIN_IDS:
+        await query.answer("❌ Non autorizzato", show_alert=True)
+        return
+    
+    if data.startswith(f"{CB_ACCOPPIAMENTO}approva_"):
+        richiesta_id = data.replace(f"{CB_ACCOPPIAMENTO}approva_", "")
+        
+        richiesta = user_management.get_richiesta(richiesta_id)
+        if not richiesta:
+            await query.answer("❌ Richiesta non trovata", show_alert=True)
+            return
+        
+        success, msg = user_management.approva_richiesta(richiesta_id, str(user_id))
+        
+        if success:
+            nome_lista = richiesta.get("nome_lista", "")
+            user_id_utente = richiesta.get("user_id")
+            
+            success_assegna, msg_assegna = user_management.assegna_lista_by_name(user_id_utente, nome_lista)
+            
+            if success_assegna:
+                await query.edit_message_text(
+                    f"✅ <b>Accoppiamento approvato!</b>\n\n"
+                    f"Richiesta: {richiesta_id[:8]}\n"
+                    f"Utente: {user_id_utente}\n"
+                    f"Lista: {nome_lista}",
+                    parse_mode=constants.ParseMode.HTML
+                )
+                
+                try:
+                    admin_id = ADMIN_IDS[0] if ADMIN_IDS else None
+                    if admin_id:
+                        await app.bot.send_message(
+                            chat_id=int(user_id_utente),
+                            text=f"✅ <b>Accoppiamento approvato!</b>\n\n"
+                                 f"La tua richiesta per la lista «{nome_lista}» è stata approvata.\n\n"
+                                 f"Contatta l'amministratore: tg://user?id={admin_id}",
+                            parse_mode=constants.ParseMode.HTML
+                        )
+                except Exception as e:
+                    logger.error(f"Errore notifica utente: {e}")
+            else:
+                await query.edit_message_text(
+                    f"⚠️ Richiesta approvata ma errore nell'assegnazione: {msg_assegna}",
+                    parse_mode=constants.ParseMode.HTML
+                )
+        else:
+            await query.edit_message_text(f"❌ Errore: {msg}", parse_mode=constants.ParseMode.HTML)
+    
+    elif data.startswith(f"{CB_ACCOPPIAMENTO}rifiuta_"):
+        richiesta_id = data.replace(f"{CB_ACCOPPIAMENTO}rifiuta_", "")
+        
+        context.user_data["rifiuto_richiesta_id"] = richiesta_id
+        
+        await query.edit_message_text(
+            f"📝 <b>Inserisci motivazione rifiuto</b>\n\n"
+            f"Per la richiesta: {richiesta_id[:8]}\n\n"
+            f"Invia il motivo del rifiuto. L'utente verrà notificato.\n\n"
+            f"Usa /cancel per annullare.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        return RIFIUTO_MOTIVAZIONE
+    
+    elif data.startswith(f"{CB_ACCOPPIAMENTO}ticket_"):
+        richiesta_id = data.replace(f"{CB_ACCOPPIAMENTO}ticket_", "")
+        
+        richiesta = user_management.get_richiesta(richiesta_id)
+        if not richiesta:
+            await query.answer("❌ Richiesta non trovata", show_alert=True)
+            return
+        
+        user_id_utente = richiesta.get("user_id")
+        nome_lista = richiesta.get("nome_lista", "")
+        motivazione = richiesta.get("motivo_rifiuto", "N/A")
+        
+        ticket = ticket_system.crea_ticket(
+            user_id=user_id_utente,
+            problema=f"Richiesta accoppiamento lista rifiutata – desidero assistenza\n\nLista: {nome_lista}\nMotivo: {motivazione}",
+            categoria="media"
+        )
+        
+        if ticket:
+            await notifica_admin_ticket(ticket)
+            
+            keyboard = [
+                [InlineKeyboardButton("🏠 Menu Principale", callback_data=f"{CB_MENU}main")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                f"✅ <b>Ticket creato!</b>\n\n"
+                f"🎫 Ticket #{ticket.get('id', '')[:8]}\n\n"
+                "Un admin ti risponderà al più presto.",
+                reply_markup=reply_markup,
+                parse_mode=constants.ParseMode.HTML
+            )
+        else:
+            await query.edit_message_text(
+                "❌ Errore nella creazione del ticket.",
+                parse_mode=constants.ParseMode.HTML
+            )
+
+
+async def rifiuto_motivazione_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Riceve la motivazione del rifiuto e notifica l'utente."""
+    motivazione = update.message.text
+    user_id = str(update.effective_user.id)
+    richiesta_id = context.user_data.get("rifiuto_richiesta_id")
+    
+    if not richiesta_id:
+        await update.message.reply_text(
+            "❌ Nessuna richiesta da rifiutare.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        return ConversationHandler.END
+    
+    richiesta = user_management.get_richiesta(richiesta_id)
+    if not richiesta:
+        await update.message.reply_text(
+            "❌ Richiesta non trovata.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        context.user_data.pop("rifiuto_richiesta_id", None)
+        return ConversationHandler.END
+    
+    success, msg = user_management.rifiuta_richiesta(richiesta_id, str(user_id), motivazione)
+    
+    if success:
+        user_id_utente = richiesta.get("user_id")
+        nome_lista = richiesta.get("nome_lista", "")
+        
+        await update.message.reply_text(
+            f"✅ Richiesta {richiesta_id[:8]} rifiutata.\nL'utente è stato notificato.",
+            parse_mode=constants.ParseMode.HTML
+        )
+        
+        try:
+            keyboard = [
+                [InlineKeyboardButton("🎫 Apri ticket assistenza", callback_data=f"{CB_ACCOPPIAMENTO}ticket_{richiesta_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await app.bot.send_message(
+                chat_id=int(user_id_utente),
+                text=f"❌ <b>Richiesta accoppiamento rifiutata</b>\n\n"
+                     f"Motivo: {motivazione}",
+                reply_markup=reply_markup,
+                parse_mode=constants.ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Errore notifica utente rifiuto: {e}")
+    else:
+        await update.message.reply_text(f"❌ Errore: {msg}", parse_mode=constants.ParseMode.HTML)
+    
+    context.user_data.pop("rifiuto_richiesta_id", None)
+    return ConversationHandler.END
+
+
 async def handle_callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gestisce callback menu."""
     query = update.callback_query
@@ -2196,18 +2380,35 @@ async def notifica_admin_richiesta(richiesta: Dict):
     if not ADMIN_IDS:
         return
     
-    text = f"🔔 <b>Nuova richiesta lista IPTV!</b>\n\n"
-    text += f"🆔 Utente: {richiesta.get('user_id')}\n"
-    text += f"👤 Username: @{richiesta.get('username', 'N/A')}\n"
-    text += f"📺 Lista: {richiesta.get('nome_lista', 'N/A')}\n"
-    text += f"📅 Data: {richiesta.get('data_richiesta')}"
+    tipo_richiesta = richiesta.get("tipo", "lista")
     
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Approva", callback_data=f"{CB_ADMIN}approva_{richiesta.get('id')}"),
-            InlineKeyboardButton("❌ Rifiuta", callback_data=f"{CB_ADMIN}rifiuta_{richiesta.get('id')}")
+    if tipo_richiesta == "accoppiamento":
+        text = f"📋 <b>Richiesta accoppiamento lista-utente</b>\n\n"
+        text += f"🆔 Utente: {richiesta.get('user_id')}\n"
+        text += f"👤 Username: @{richiesta.get('username', 'N/A')}\n"
+        text += f"📺 Lista richiesta: {richiesta.get('nome_lista', 'N/A')}\n"
+        text += f"📅 Data: {richiesta.get('data_richiesta')}"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Approva accoppiamento", callback_data=f"{CB_ACCOPPIAMENTO}approva_{richiesta.get('id')}"),
+                InlineKeyboardButton("❌ Nega accoppiamento", callback_data=f"{CB_ACCOPPIAMENTO}rifiuta_{richiesta.get('id')}")
+            ]
         ]
-    ]
+    else:
+        text = f"🔔 <b>Nuova richiesta lista IPTV!</b>\n\n"
+        text += f"🆔 Utente: {richiesta.get('user_id')}\n"
+        text += f"👤 Username: @{richiesta.get('username', 'N/A')}\n"
+        text += f"📺 Lista: {richiesta.get('nome_lista', 'N/A')}\n"
+        text += f"📅 Data: {richiesta.get('data_richiesta')}"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Approva", callback_data=f"{CB_ADMIN}approva_{richiesta.get('id')}"),
+                InlineKeyboardButton("❌ Rifiuta", callback_data=f"{CB_ADMIN}rifiuta_{richiesta.get('id')}")
+            ]
+        ]
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     for admin_id in ADMIN_IDS:
@@ -2592,6 +2793,9 @@ def setup_handlers(application: Application):
     # ConversationHandler per creazione lista admin
     application.add_handler(admin_lista_handler)
     
+    # ConversationHandler per rifiuto richiesta con motivazione
+    application.add_handler(rifiuto_handler)
+    
     # Comandi utente
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
@@ -2617,6 +2821,7 @@ def setup_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(handle_callback_ticket, pattern=f"^{CB_TICKET}"))
     application.add_handler(CallbackQueryHandler(handle_callback_admin, pattern=f"^{CB_ADMIN}"))
     application.add_handler(CallbackQueryHandler(handle_callback_menu, pattern=f"^{CB_MENU}"))
+    application.add_handler(CallbackQueryHandler(handle_callback_accoppiamento, pattern=f"^{CB_ACCOPPIAMENTO}"))
     
     # Error handler
     application.add_error_handler(error_handler)
