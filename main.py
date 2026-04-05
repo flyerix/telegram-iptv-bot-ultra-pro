@@ -271,8 +271,15 @@ async def setup_webhook(application: Application):
             
             # VERIFICA
             webhook_info = await application.bot.get_webhook_info()
-            logger.info(f"Webhook info - URL: {webhook_info.url}")
-            logger.info(f"Webhook info - pending_updates: {webhook_info.pending_update_count}")
+            logger.info(f"=== WEBHOOK INFO DOPO SETUP ===")
+            logger.info(f"URL: {webhook_info.url}")
+            logger.info(f"Pending updates: {webhook_info.pending_update_count}")
+            logger.info(f"Has custom certificate: {webhook_info.has_custom_certificate}")
+            logger.info(f"IP address: {webhook_info.ip_address}")
+            logger.info(f"Last error: {webhook_info.last_error_date}")
+            logger.info(f"Max connections: {webhook_info.max_connections}")
+            logger.info(f"Allowed updates: {webhook_info.allowed_updates}")
+            logger.info(f"=====================================")
             
             if webhook_info.url == webhook_url:
                 logger.info("✅ Webhook configurato correttamente!")
@@ -2348,8 +2355,27 @@ async def try_recovery(context: ContextTypes.DEFAULT_TYPE, error_type: str):
                 # Riconfigura anche in questo caso
                 await setup_webhook(context.application)
         
+        elif error_type == "webhook_verification":
+            # Verifica specifica del webhook
+            logger.info("🔧 Recovery webhook: verifico e ricreo il webhook...")
+            try:
+                # Cancella webhook esistente
+                await bot.delete_webhook()
+                logger.info("✅ Webhook eliminato")
+                await asyncio.sleep(1)
+                
+                # Ricrea webhook
+                await setup_webhook(context.application)
+                logger.info("✅ Webhook ricreato")
+                
+                # Verifica finale
+                webhook_info = await bot.get_webhook_info()
+                logger.info(f"✅ Webhook verificato: {webhook_info.url}, pending: {webhook_info.pending_update_count}")
+            except Exception as e:
+                logger.error(f"❌ Recovery webhook fallito: {e}")
+        
         # Notifica admin solo per errori critici
-        if error_type in ["telegram_api", "wake_up", "bot_ping"]:
+        if error_type in ["telegram_api", "wake_up", "bot_ping", "webhook_verification"]:
             for admin_id in ADMIN_IDS:
                 try:
                     await bot.send_message(
@@ -2407,7 +2433,7 @@ async def wake_up_bot(context: ContextTypes.DEFAULT_TYPE):
 
 async def job_bot_ping(context: ContextTypes.DEFAULT_TYPE):
     """
-    Job periodico per "pingare" il bot ogni 3 minuti.
+    Job periodico per "pingare" il bot ogni 2 minuti.
     Mantiene attiva la connessione e verifica che il bot risponda.
     """
     logger.info("📡 Bot ping...")
@@ -2418,6 +2444,64 @@ async def job_bot_ping(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Bot ping fallito: {e}")
         await try_recovery(context, "bot_ping")
+
+
+async def job_verify_webhook(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Job periodico per verificare e ripristinare il webhook ogni 2 minuti.
+    Verifica che:
+    - L'URL del webhook sia corretto
+    - pending_update_count non sia troppo alto (>1000)
+    - Il webhook sia funzionante
+    """
+    import asyncio
+    logger.info("🔍 Verifica webhook...")
+    
+    try:
+        bot = context.bot
+        
+        # Ottieni info webhook
+        webhook_info = await bot.get_webhook_info()
+        
+        # Costruisci URL atteso
+        render_service_name = os.environ.get('RENDER_SERVICE_NAME', '')
+        expected_url = os.environ.get("WEBHOOK_URL")
+        if not expected_url and render_service_name:
+            expected_url = f"https://{render_service_name}.onrender.com/webhook"
+        elif not expected_url:
+            expected_url = f"https://telegram-iptv-bot-ultra-pro.onrender.com/webhook"
+        
+        # Verifica URL
+        if webhook_info.url != expected_url:
+            logger.warning(f"⚠️ Webhook URL non corrisponde! Atteso: {expected_url}, Attuale: {webhook_info.url}")
+            logger.info("🔧 Ripristino webhook...")
+            await try_recovery(context, "webhook_verification")
+            return
+        
+        # Verifica pending updates
+        if webhook_info.pending_update_count > 1000:
+            logger.warning(f"⚠️ Troppi pending updates: {webhook_info.pending_update_count}")
+            # Prova a svuotare
+            try:
+                # Invia una richiesta per forzare l'elaborazione
+                await bot.get_me()
+                logger.info("Tentato flush pending updates")
+            except Exception as e:
+                logger.error(f"Errore flush: {e}")
+                await try_recovery(context, "webhook_verification")
+            return
+        
+        # Verifica errori
+        if webhook_info.last_error_date:
+            logger.warning(f"⚠️ Webhook last error: {webhook_info.last_error_date}")
+            await try_recovery(context, "webhook_verification")
+            return
+        
+        logger.info(f"✅ Webhook OK: {webhook_info.url}, pending: {webhook_info.pending_update_count}")
+        
+    except Exception as e:
+        logger.error(f"❌ Errore verifica webhook: {e}")
+        await try_recovery(context, "webhook_verification")
 
 
 async def job_backup(context: ContextTypes.DEFAULT_TYPE):
@@ -2541,25 +2625,32 @@ def setup_handlers(application: Application):
 def setup_jobs(job_queue: JobQueue):
     """Configura i job periodici."""
     
-    # Health check ogni 3 minuti (180 secondi)
+    # Health check ogni 2 minuti
     job_queue.run_repeating(
         health_check,
-        interval=HEALTH_CHECK_INTERVAL,
-        first=60  # Prima esecuzione dopo 1 minuto
+        interval=120,
+        first=60
     )
     
-    # Ping del bot ogni 3 minuti per mantenere attiva la connessione
+    # Ping del bot ogni 2 minuti per mantenere attiva la connessione
     job_queue.run_repeating(
         job_bot_ping,
-        interval=180,  # 3 minuti
-        first=30  # Prima esecuzione dopo 30 secondi
+        interval=120,
+        first=30
+    )
+    
+    # Verifica webhook ogni 2 minuti
+    job_queue.run_repeating(
+        job_verify_webhook,
+        interval=120,
+        first=90
     )
     
     # Cleanup sessioni ogni 15 minuti
     job_queue.run_repeating(
         job_cleanup_sessions,
-        interval=900,  # 15 minuti
-        first=300  # Prima esecuzione dopo 5 minuti
+        interval=900,
+        first=300
     )
     
     # Backup ogni 24 ore
