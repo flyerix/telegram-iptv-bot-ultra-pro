@@ -1,0 +1,18 @@
+# Railway configuration for Telegram IPTV Bot Ultra Pro
+# Uses Dockerfile for build
+# Sets up health check and restart policy
+
+build:
+  dockerfile: Dockerfile
+
+deploy:
+  restartPolicy: on_failure
+  maxReplicas: 1
+  healthcheck:
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    startPeriod: 10s
+
+# Environment variables are set in Railway dashboard
+# Ensure to set: TELEGRAM_BOT_TOKEN, ADMIN_IDS, etc.

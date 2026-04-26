@@ -1,42 +1,30 @@
-"""
-Modulo per le notifiche intelligenti di HelperBot.
-Gestisce notifiche automatiche, code, retry e report giornalieri.
-
-Caratteristiche:
-- Notifiche automatiche per ticket senza risposta, backup falliti,
-  violazioni rate limit, scadenze IPTV e cambi stato servizio
-- Tipi di notifiche: immediate, differite, periodiche
-- Coda notifiche con retry automatico
-- Log delle notifiche inviate
-- Report giornaliero per gli admin
-
-Utilizza il modulo di persistenza per la coda delle notifiche.
-"""
-
-import uuid
+import asyncio
 import logging
-import time
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Callable
-from enum import Enum
-from dataclasses import dataclass, field
-from threading import Lock
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Any, Callable, Awaitable
 from collections import deque
+import time
+import uuid
+import copy
+import os
+import threading
 
-from core.data_persistence import DataPersistence
+# Costanti
+MAX_QUEUE_SIZE = int(os.getenv("NOTIFICATION_MAX_QUEUE", "1000"))
+MAX_LOG_ENTRIES = int(os.getenv("NOTIFICATION_MAX_LOG", "1000"))
+MAX_RETRY_ATTEMPTS = int(os.getenv("NOTIFICATION_MAX_RETRY", "3"))
+CALLBACK_TIMEOUT = int(os.getenv("NOTIFICATION_CALLBACK_TIMEOUT", "10"))
+LOG_RETENTION_DAYS = int(os.getenv("NOTIFICATION_LOG_RETENTION", "30"))
 
-# Importa costanti dagli altri moduli
-from modules.user_management import STATO_ATTIVO, STATO_LISTA_ATTIVA, STATO_LISTA_SCADUTA
-from modules.stato_servizio import STATO_OPERATIVO, STATO_PROBLEMI, STATO_MANUTENZIONE, STATO_DISSERVIZIO
 
-# Configurazione logger
 logger = logging.getLogger(__name__)
 
 
-# ==================== COSTANTI ====================
+from enum import Enum
+from dataclasses import dataclass, field
+
 
 class TipoNotifica(Enum):
-    """Tipi di notifica supportati."""
     TICKET_SENZA_RISPOSTA = "ticket_senza_risposta"
     BACKUP_FALLITO = "backup_fallito"
     RATE_LIMIT_VIOLATO = "rate_limit_violato"
@@ -47,34 +35,21 @@ class TipoNotifica(Enum):
 
 
 class PrioritaNotifica(Enum):
-    """Livelli di priorità per le notifiche."""
-    CRITICA = 1      # Notifiche critiche che richiedono attenzione immediata
-    ALTA = 2          # Notifiche importanti
-    MEDIA = 3         # Notifiche normali
-    BASSA = 4         # Notifiche a bassa priorità
+    CRITICA = 1
+    ALTA = 2
+    MEDIA = 3
+    BASSA = 4
 
 
 class StatoNotifica(Enum):
-    """Stati di una notifica nella coda."""
     IN_CODA = "in_coda"
     INVIATA = "inviata"
     FALLITA = "fallita"
     ANNULLATA = "annullata"
 
 
-# Costanti configurazione
-ORE_SENZA_RISPOSTA_DEFAULT = 24  # Ore prima di notificare ticket senza risposta
-GIORNI_SCADENZA_DEFAULT = 3     # Giorni prima della scadenza per notifica
-MAX_RETRY = 3                    # Numero massimo di tentativi per ogni notifica
-INTERVALLO_RETRY_SECONDI = 60     # Intervallo tra i retry in secondi
-MAX_NOTIFICHE_CODA = 1000        # Massimo notifiche in coda
-
-
-# ==================== DATACLASS ====================
-
 @dataclass
 class Notifica:
-    """Rappresenta una singola notifica."""
     id: str
     user_id: int
     tipo: str
@@ -90,7 +65,6 @@ class Notifica:
 
 @dataclass
 class LogNotifica:
-    """Rappresenta una notifica già inviata nel log."""
     id: str
     user_id: int
     tipo: str
@@ -101,773 +75,401 @@ class LogNotifica:
     errore: Optional[str] = None
 
 
-@dataclass
-class NotificaStatoServizio:
-    """Rappresenta una notifica di cambio stato servizio."""
-    vecchio_stato: str
-    nuovo_stato: str
-    timestamp: str
-
-
-# ==================== ECCEZIONI ====================
-
 class NotificheError(Exception):
-    """Eccezione personalizzata per errori nel sistema notifiche."""
     pass
 
 
 class CodaPienaError(NotificheError):
-    """Eccezione quando la coda delle notifiche è piena."""
     pass
 
 
 class NotificaNonTrovataError(NotificheError):
-    """Eccezione quando una notifica non viene trovata."""
     pass
 
 
-# ==================== CLASSE PRINCIPALE ====================
-
 class NotificationSystem:
-    """
-    Sistema di notifiche intelligenti per HelperBot.
-    Gestisce l'invio, la coda e il retry delle notifiche.
-    """
-    
     _instance = None
-    _lock = Lock()
-    
-    def __new__(cls, persistence: Optional[DataPersistence] = None):
-        """
-        Implementa il pattern Singleton per il sistema notifiche.
-        
-        Args:
-            persistence: Istanza di DataPersistence opzionale
-            
-        Returns:
-            L'istanza singleton del sistema notifiche
-        """
-        with cls._lock:
+    _instance_lock = threading.Lock()
+
+    def __new__(cls, persistence: Any = None):
+        with cls._instance_lock:
             if cls._instance is None:
                 cls._instance = super().__new__(cls)
                 cls._instance._initialized = False
-            return cls._instance
-    
-    def __init__(self, persistence: Optional[DataPersistence] = None):
-        """
-        Inizializza il sistema notifiche.
-        
-        Args:
-            persistence: Istanza di DataPersistence opzionale
-        """
-        # Evita re-inizializzazione
-        if self._initialized:
+        return cls._instance
+
+    def __init__(self, persistence: Any = None) -> None:
+        if getattr(self, "_initialized", False):
             return
-        
+
         self.persistence = persistence
-        self._lock = Lock()
-        
-        # Configurazione
-        self.ore_senza_risposta = ORE_SENZA_RISPOSTA_DEFAULT
-        self.giorni_scadenza = GIORNI_SCADENZA_DEFAULT
-        
-        # Code e cache
-        self._coda_notifiche: deque = deque(maxlen=MAX_NOTIFICHE_CODA)
-        self._log_notifiche: List[LogNotifica] = []
-        self._notifiche_attive: Dict[str, Notifica] = {}
-        
-        # Admin IDs (configurabile)
+        self._lock = asyncio.Lock()
+        self._coda_notifiche: deque = deque(maxlen=MAX_QUEUE_SIZE)
+        self._notifiche_attive: Dict[str, Dict] = {}
+        self._log_notifiche: deque = deque(maxlen=MAX_LOG_ENTRIES)
         self._admin_ids: List[int] = []
-        
-        # Callback per l'invio effettivo (da configurare esternamente)
         self._send_callback: Optional[Callable] = None
-        
-        # Flag per il report giornaliero
-        self._ultimo_report: Optional[datetime] = None
-        
+        self._worker_task: Optional[asyncio.Task] = None
+        self._paused = False
+        self._closed = False
+        self.metrics = {
+            "enqueued": 0,
+            "sent": 0,
+            "failed": 0,
+            "retried": 0,
+        }
+        self._dead_letter_queue: deque = deque(maxlen=MAX_QUEUE_SIZE)
         self._initialized = True
-        logger.info("Sistema notifiche inizializzato")
-    
-    # ==================== METODI DI CONFIGURAZIONE ====================
-    
-    def imposta_admin(self, admin_ids: List[int]) -> None:
-        """
-        Imposta gli ID degli admin che ricevono le notifiche di sistema.
-        
-        Args:
-            admin_ids: Lista di ID utente Telegram per gli admin
-        """
-        self._admin_ids = admin_ids
-        logger.info(f"Admin impostati: {admin_ids}")
-    
-    def imposta_callback_invio(self, callback: Callable) -> None:
-        """
-        Imposta la funzione callback per l'invio effettivo delle notifiche.
-        
-        Args:
-            callback: Funzione async che accetta (user_id, messaggio) e restituisce bool
-        """
-        self._send_callback = callback
-        logger.info("Callback di invio notifiche configurato")
-    
-    def imposta_configurazione(self, ore_senza_risposta: int = ORE_SENZA_RISPOSTA_DEFAULT,
-                                giorni_scadenza: int = GIORNI_SCADENZA_DEFAULT) -> None:
-        """
-        Configura i parametri del sistema notifiche.
-        
-        Args:
-            ore_senza_risposta: Ore prima di notificare ticket senza risposta
-            giorni_scadenza: Giorni prima della scadenza per notifica
-        """
-        self.ore_senza_risposta = ore_senza_risposta
-        self.giorni_scadenza = giorni_scadenza
-        logger.info(f"Configurazione notifiche: {ore_senza_risposta}h/{giorni_scadenza}gg")
-    
-    # ==================== METODI DI INVIO NOTIFICHE ====================
-    
-    async def invia_notifica(self, user_id: int, tipo: TipoNotifica, 
-                           messaggio: str, priorità: PrioritaNotifica = PrioritaNotifica.MEDIA,
-                           metadata: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Invia una notifica a un utente.
-        
-        Args:
-            user_id: ID utente Telegram
-            tipo: Tipo di notifica
-            messaggio: Contenuto della notifica
-            priorità: Priorità della notifica
-            metadata: Dati aggiuntivi opzionali
-            
-        Returns:
-            ID della notifica creata
-            
-        Raises:
-            NotificheError: Se l'invio fallisce
-        """
+        logger.info("NotificationSystem initialized")
+
+    async def _acquire_state_lock(self) -> Any:
+        return self._lock
+
+    async def invia_notifica(
+        self,
+        user_id: int,
+        tipo: TipoNotifica,
+        messaggio: str,
+        priorità: PrioritaNotifica = PrioritaNotifica.MEDIA,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
         notifica_id = str(uuid.uuid4())
-        
-        with self._lock:
-            # Crea l'oggetto notifica
-            notifica = Notifica(
-                id=notifica_id,
-                user_id=user_id,
-                tipo=tipo.value,
-                messaggio=messaggio,
-                priorità=priorità.value,
-                stato=StatoNotifica.IN_CODA.value,
-                data_creazione=datetime.now().isoformat(),
-                metadata=metadata or {}
-            )
-            
-            # Aggiungi alla coda
-            self._coda_notifiche.append(notifica)
-            self._notifiche_attive[notifica_id] = notifica
-            
-            logger.debug(f"Notifica {notifica_id} aggiunta alla coda per user {user_id}")
-        
-        # Prova a inviare immediatamente se è una notifica di priorità critica
+        notifica_dict = {
+            "id": notifica_id,
+            "user_id": user_id,
+            "tipo": tipo.value,
+            "messaggio": messaggio,
+            "priorità": priorità.value,
+            "stato": StatoNotifica.IN_CODA.value,
+            "data_creazione": datetime.now(timezone.utc).isoformat(),
+            "data_invio": None,
+            "retry_count": 0,
+            "errore": None,
+            "metadata": copy.deepcopy(metadata) if metadata else {},
+        }
+
+        async with self._lock:
+            if len(self._coda_notifiche) >= MAX_QUEUE_SIZE:
+                oldest = self._coda_notifiche.popleft()
+                logger.warning(f"Coda piena, rimossa notifica piu' vecchia: {oldest['id']}")
+            self._coda_notifiche.append(notifica_dict)
+            self._notifiche_attive[notifica_id] = notifica_dict
+            self.metrics["enqueued"] += 1
+
+        logger.debug(f"Notifica {notifica_id} accodata per user {user_id}")
+
         if priorità == PrioritaNotifica.CRITICA:
-            await self._processa_notifica(notifica_id)
-        
+            asyncio.create_task(self._processa_notifica(notifica_id))
+
         return notifica_id
-    
+
     async def _processa_notifica(self, notifica_id: str) -> bool:
-        """
-        Processa l'invio di una singola notifica.
-        
-        Args:
-            notifica_id: ID della notifica da inviare
-            
-        Returns:
-            True se l'invio ha avuto successo
-        """
-        with self._lock:
+        async with self._lock:
             if notifica_id not in self._notifiche_attive:
                 return False
-            
-            notifica = self._notifiche_attive[notifica_id]
-        
-        # Usa callback se disponibile
+            notifica = copy.deepcopy(self._notifiche_attive[notifica_id])
+
+        if self._paused:
+            logger.warning(f"Sistema in pausa, notifica {notifica_id} in attesa")
+            return False
+
         if self._send_callback:
             try:
-                successo = await self._send_callback(
-                    notifica.user_id, 
-                    notifica.messaggio
+                successo = await asyncio.wait_for(
+                    self._send_callback(notifica["user_id"], notifica["messaggio"]),
+                    timeout=CALLBACK_TIMEOUT,
                 )
-                
                 if successo:
-                    await self._notifica_inviata(notifica)
+                    await self._notifica_inviata(notifica_id)
                     return True
                 else:
-                    await self._notifica_fallita(notifica, "Invio fallito")
+                    await self._notifica_fallita(notifica_id, "Callback ha ritornato False")
                     return False
-                    
+            except asyncio.TimeoutError:
+                await self._notifica_fallita(notifica_id, f"Timeout dopo {CALLBACK_TIMEOUT}s")
+                return False
             except Exception as e:
-                logger.error(f"Errore nell'invio della notifica {notifica_id}: {e}")
-                await self._notifica_fallita(notifica, str(e))
+                await self._notifica_fallita(notifica_id, str(e))
                 return False
         else:
-            # Simula invio se non c'è callback
-            logger.warning(f"Nessun callback configurato, notifica {notifica_id} simulata")
-            await self._notifica_inviata(notifica)
+            logger.warning(f"Nessun callback, notifica {notifica_id} simulata")
+            await self._notifica_inviata(notifica_id)
             return True
-    
-    async def _notifica_inviata(self, notifica: Notifica) -> None:
-        """
-        Marca una notifica come inviata con successo.
-        
-        Args:
-            notifica: Notifica inviata
-        """
-        with self._lock:
-            notifica.stato = StatoNotifica.INVIATA.value
-            notifica.data_invio = datetime.now().isoformat()
-            
-            # Crea entry per il log
-            log_entry = LogNotifica(
-                id=notifica.id,
-                user_id=notifica.user_id,
-                tipo=notifica.tipo,
-                messaggio=notifica.messaggio,
-                priorità=notifica.priorità,
-                data_invio=notifica.data_invio,
-                successo=True
-            )
-            
+
+    async def _notifica_inviata(self, notifica_id: str) -> None:
+        async with self._lock:
+            if notifica_id not in self._notifiche_attive:
+                return
+            notifica = self._notifiche_attive[notifica_id]
+            notifica["stato"] = StatoNotifica.INVIATA.value
+            notifica["data_invio"] = datetime.now(timezone.utc).isoformat()
+
+            log_entry = {
+                "id": notifica["id"],
+                "user_id": notifica["user_id"],
+                "tipo": notifica["tipo"],
+                "messaggio": notifica["messaggio"],
+                "priorità": notifica["priorità"],
+                "data_invio": notifica["data_invio"],
+                "successo": True,
+                "errore": None,
+            }
             self._log_notifiche.append(log_entry)
-            
-            # Rimuovi dalle notifiche attive
-            if notifica.id in self._notifiche_attive:
-                del self._notifiche_attive[notifica.id]
-        
-        logger.info(f"Notifica {notifica.id} inviata con successo a {notifica.user_id}")
-    
-    async def _notifica_fallita(self, notifica: Notifica, errore: str) -> None:
-        """
-        Gestisce il fallimento di una notifica.
-        
-        Args:
-            notifica: Notifica fallita
-            errore: Messaggio di errore
-        """
-        with self._lock:
-            notifica.retry_count += 1
-            notifica.errore = errore
-            
-            if notifica.retry_count >= MAX_RETRY:
-                # Numero massimo di tentativi raggiunto
-                notifica.stato = StatoNotifica.FALLITA.value
-                
-                # Crea entry per il log
-                log_entry = LogNotifica(
-                    id=notifica.id,
-                    user_id=notifica.user_id,
-                    tipo=notifica.tipo,
-                    messaggio=notifica.messaggio,
-                    priorità=notifica.priorità,
-                    data_invio=datetime.now().isoformat(),
-                    successo=False,
-                    errore=errore
-                )
-                
+            if notifica_id in self._notifiche_attive:
+                del self._notifiche_attive[notifica_id]
+
+        self.metrics["sent"] += 1
+        logger.info(f"Notifica {notifica_id} inviata a {notifica['user_id']}")
+        await self._salva_stato()
+
+    async def _notifica_fallita(self, notifica_id: str, errore: str) -> None:
+        async with self._lock:
+            if notifica_id not in self._notifiche_attive:
+                return
+            notifica = self._notifiche_attive[notifica_id]
+            notifica["retry_count"] += 1
+            notifica["errore"] = errore
+            retry_count = notifica["retry_count"]
+
+            if retry_count >= MAX_RETRY_ATTEMPTS:
+                notifica["stato"] = StatoNotifica.FALLITA.value
+                log_entry = {
+                    "id": notifica["id"],
+                    "user_id": notifica["user_id"],
+                    "tipo": notifica["tipo"],
+                    "messaggio": notifica["messaggio"],
+                    "priorità": notifica["priorità"],
+                    "data_invio": datetime.now(timezone.utc).isoformat(),
+                    "successo": False,
+                    "errore": errore,
+                }
                 self._log_notifiche.append(log_entry)
-                
-                # Rimuovi dalle notifiche attive
-                if notifica.id in self._notifiche_attive:
-                    del self._notifiche_attive[notifica.id]
-                
-                logger.error(f"Notifica {notifica.id} fallita dopo {MAX_RETRY} tentativi")
+                if notifica_id in self._notifiche_attive:
+                    del self._notifiche_attive[notifica_id]
+                self._dead_letter_queue.append(copy.deepcopy(notifica))
+                self.metrics["failed"] += 1
+                logger.error(f"Notifica {notifica_id} fallita definitivamente, DLQ")
             else:
-                # Rimetti in coda per retry
-                notifica.stato = StatoNotifica.IN_CODA.value
-                self._coda_notifiche.append(notifica)
-                logger.warning(f"Notifica {notifica.id} fallita, retry {notifica.retry_count}/{MAX_RETRY}")
-    
-    # ==================== GESTIONE CODE ====================
-    
+                notifica["stato"] = StatoNotifica.IN_CODA.value
+                self._coda_notifiche.append(copy.deepcopy(notifica))
+                self.metrics["retried"] += 1
+                logger.warning(f"Notifica {notifica_id} fallita, retry {retry_count}/{MAX_RETRY_ATTEMPTS}")
+
+        await self._salva_stato()
+
     async def processa_coda(self) -> None:
-        """Processa tutte le notifiche in coda."""
-        # Copia la coda per non bloccare durante l'elaborazione
-        with self._lock:
+        async with self._lock:
             coda_copy = list(self._coda_notifiche)
             self._coda_notifiche.clear()
-        
-        for notifica in coda_copy:
-            if notifica.stato == StatoNotifica.IN_CODA.value:
-                await self._processa_notifica(notifica.id)
-    
-    async def retry_notifiche_fallite(self) -> None:
-        """Riprova a inviare le notifiche fallite."""
-        with self._lock:
-            for notifica_id, notifica in list(self._notifiche_attive.items()):
-                if notifica.stato == StatoNotifica.IN_CODA.value and notifica.retry_count > 0:
-                    await self._processa_notifica(notifica_id)
-    
-    def get_notifiche_in_coda(self) -> List[Dict[str, Any]]:
-        """
-        Restituisce la lista delle notifiche in coda.
-        
-        Returns:
-            Lista di dizionari con i dati delle notifiche in coda
-        """
-        with self._lock:
-            return [
-                {
-                    "id": n.id,
-                    "user_id": n.user_id,
-                    "tipo": n.tipo,
-                    "messaggio": n.messaggio,
-                    "priorità": n.priorità,
-                    "stato": n.stato,
-                    "data_creazione": n.data_creazione,
-                    "retry_count": n.retry_count
-                }
-                for n in self._coda_notifiche
-            ]
-    
-    def get_log_notifiche(self, limite: int = 100) -> List[Dict[str, Any]]:
-        """
-        Restituisce il log delle notifiche inviate.
-        
-        Args:
-            limite: Numero massimo di entry da restituire
-            
-        Returns:
-            Lista di dizionari con i dati delle notifiche inviate
-        """
-        with self._lock:
-            log_slice = self._log_notifiche[-limite:] if limite > 0 else self._log_notifiche
-            return [
-                {
-                    "id": l.id,
-                    "user_id": l.user_id,
-                    "tipo": l.tipo,
-                    "messaggio": l.messaggio,
-                    "priorità": l.priorità,
-                    "data_invio": l.data_invio,
-                    "successo": l.successo,
-                    "errore": l.errore
-                }
-                for l in log_slice
-            ]
-    
-    # ==================== NOTIFICHE AUTOMATICHE ====================
-    
-    async def notifica_ticket_senza_risposta(self, persistence: DataPersistence) -> List[int]:
-        """
-        Notifica gli admin dei ticket senza risposta da più di X ore.
-        
-        Args:
-            persistence: Istanza di DataPersistence per accedere ai ticket
-            
-        Returns:
-            Lista di ID delle notifiche create
-        """
-        if not persistence:
-            logger.warning("Persistence non fornito a notifica_ticket_senza_risposta")
-            return []
-        
-        notifica_ids = []
-        now = datetime.now()
-        soglia_tempo = now - timedelta(hours=self.ore_senza_risposta)
-        
-        # Carica i ticket dal database
-        try:
-            with persistence._lock:
-                ticket_data = persistence._data.get("ticket", {})
-            
-            # Cerca ticket aperti senza risposta
-            for ticket_id, ticket in ticket_data.items():
-                stato = ticket.get("stato", "")
-                # Considera solo ticket aperti o in lavorazione
-                if stato not in ["aperto", "in_lavorazione"]:
-                    continue
-                
-                # Controlla la data dell'ultimo messaggio
-                ultimo_messaggio = ticket.get("ultimo_messaggio", ticket.get("data_creazione", ""))
-                if ultimo_messaggio:
-                    try:
-                        data_ultimo = datetime.fromisoformat(ultimo_messaggio)
-                        if data_ultimo < soglia_tempo:
-                            # Crea notifica per ogni admin
-                            for admin_id in self._admin_ids:
-                                messaggio = (
-                                    f"⚠️ <b>Ticket senza risposta</b>\n\n"
-                                    f"Ticket #{ticket_id[:8]}\n"
-                                    f"Stato: {stato}\n"
-                                    f"Orario: {data_ultimo.strftime('%d/%m/%Y %H:%M')}\n"
-                                    f"Da tempo: {self.ore_senza_risposta}h+"
-                                )
-                                
-                                notifica_id = await self.invia_notifica(
-                                    admin_id,
-                                    TipoNotifica.TICKET_SENZA_RISPOSTA,
-                                    messaggio,
-                                    PrioritaNotifica.ALTA,
-                                    {"ticket_id": ticket_id}
-                                )
-                                notifica_ids.append(notifica_id)
-                    except Exception as e:
-                        logger.error(f"Errore nel controllo ticket {ticket_id}: {e}")
-            
-            if notifica_ids:
-                logger.info(f"Create {len(notifica_ids)} notifiche per ticket senza risposta")
-                
-        except Exception as e:
-            logger.error(f"Errore nel rilevamento ticket senza risposta: {e}")
-        
-        return notifica_ids
-    
-    async def notifica_backup_fallito(self, errore: str, admin_ids: Optional[List[int]] = None) -> List[int]:
-        """
-        Notifica gli admin di un backup fallito.
-        
-        Args:
-            errore: Messaggio di errore del backup
-            admin_ids: Lista opzionale di admin (usa self._admin_ids se non fornita)
-            
-        Returns:
-            Lista di ID delle notifiche create
-        """
-        dest_admin = admin_ids if admin_ids else self._admin_ids
-        
-        if not dest_admin:
-            logger.warning("Nessun admin configurato per notifica backup fallito")
-            return []
-        
-        notifica_ids = []
-        now = datetime.now()
-        
-        for admin_id in dest_admin:
-            messaggio = (
-                f"❌ <b>Backup Fallito</b>\n\n"
-                f"Data: {now.strftime('%d/%m/%Y %H:%M')}\n"
-                f"Errore: {errore}"
-            )
-            
-            notifica_id = await self.invia_notifica(
-                admin_id,
-                TipoNotifica.BACKUP_FALLITO,
-                messaggio,
-                PrioritaNotifica.CRITICA,
-                {"errore": errore}
-            )
-            notifica_ids.append(notifica_id)
-        
-        logger.warning(f"Create {len(notifica_ids)} notifiche per backup fallito")
-        return notifica_ids
-    
-    async def notifica_rate_limit_violato(self, user_id: int, violazioni_totali: int,
-                                       persistence: DataPersistence) -> Optional[str]:
-        """
-        Notifica gli admin quando un utente viola il rate limit 3+ volte.
-        
-        Args:
-            user_id: ID dell'utente che ha violato il rate limit
-            violazioni_totali: Numero totale di violazioni
-            persistence: Istanza di DataPersistence per i dati utente
-            
-        Returns:
-            ID della notifica creata, o None
-        """
-        # Crea solo se ci sono almeno 3 violazioni
-        if violazioni_totali < 3:
-            return None
-        
-        username = f"utente_{user_id}"
-        
-        # Prova a ottenere il nome utente
-        if persistence:
+
+        for notifica_dict in coda_copy:
+            if notifica_dict["stato"] == StatoNotifica.IN_CODA.value:
+                await self._processa_notifica(notifica_dict["id"])
+
+    async def _salva_stato(self) -> None:
+        if self.persistence:
             try:
-                with persistence._lock:
-                    utenti = persistence._data.get("utenti", {})
-                    if user_id in utenti:
-                        username = utenti[user_id].get("username", username)
+                coda_serializzata = list(self._coda_notifiche)
+                await self.persistence.update_data("notification_queue", coda_serializzata)
             except Exception as e:
-                logger.error(f"Errore nel recupero dati utente: {e}")
-        
-        for admin_id in self._admin_ids:
-            messaggio = (
-                f"⚠️ <b>Rate Limit Violato</b>\n\n"
-                f"Utente: {username}\n"
-                f"ID: {user_id}\n"
-                f"Violazioni: {violazioni_totali}"
-            )
-            
-            notifica_id = await self.invia_notifica(
-                admin_id,
-                TipoNotifica.RATE_LIMIT_VIOLATO,
-                messaggio,
-                PrioritaNotifica.ALTA,
-                {"user_id": user_id, "violazioni": violazioni_totali}
-            )
-            
-            logger.warning(f"Notifica rate limit per utente {user_id}: {violazioni_totali} violazioni")
-            return notifica_id
-        
-        return None
-    
-    async def notifica_scadenza_imminente(self, persistence: DataPersistence) -> List[int]:
-        """
-        Notifica gli utenti con liste IPTV in scadenza tra X giorni.
-        
-        Args:
-            persistence: Istanza di DataPersistence per accedere alle liste
-            
-        Returns:
-            Lista di ID delle notifiche create
-        """
-        if not persistence:
-            logger.warning("Persistence non fornito a notifica_scadenza_imminente")
+                logger.error(f"Errore salvataggio stato: {e}")
+
+    async def carica_stato(self) -> None:
+        if self.persistence:
+            try:
+                from core.data_persistence import DataPersistence
+                coda_serializzata = await self.persistence.get_data("notification_queue")
+                if isinstance(coda_serializzata, list):
+                    async with self._lock:
+                        self._coda_notifiche = deque(coda_serializzata, maxlen=MAX_QUEUE_SIZE)
+                    logger.info(f"Stato carico: {len(coda_serializzata)} notifiche in coda")
+            except Exception as e:
+                logger.error(f"Errore caricamento stato: {e}")
+
+    async def avvia_worker(self) -> None:
+        if self._worker_task and not self._worker_task.done():
+            return
+        self._worker_task = asyncio.create_task(self._worker_loop())
+        logger.info("Worker notifiche avviato")
+
+    async def _worker_loop(self) -> None:
+        while not self._closed:
+            try:
+                await self.processa_coda()
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Errore nel worker loop: {e}")
+                await asyncio.sleep(5)
+
+    async def close(self) -> None:
+        self._closed = True
+        if self._worker_task:
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
+        await self._salva_stato()
+        logger.info("NotificationSystem chiuso")
+
+    def pause(self) -> None:
+        self._paused = True
+        logger.info("NotificationSystem in pausa")
+
+    def resume(self) -> None:
+        self._paused = False
+        logger.info("NotificationSystem ripreso")
+
+    def get_queue_stats(self) -> Dict[str, int]:
+        return {
+            "coda_size": len(self._coda_notifiche),
+            "attive": len(self._notifiche_attive),
+            "log_size": len(self._log_notifiche),
+            "dead_letter": len(self._dead_letter_queue),
+            "paused": self._paused,
+            "closed": self._closed,
+        }
+
+    def imposta_admin(self, admin_ids: List[int]) -> None:
+        self._admin_ids = admin_ids
+        logger.info(f"Admin impostati: {admin_ids}")
+
+    def imposta_callback_invio(self, callback: Callable[[int, str], Awaitable[bool]]) -> None:
+        self._send_callback = callback
+        logger.info("Callback di invio configurata")
+
+    async def notifica_ticket_senza_risposta(
+        self, persistence: Any, ore_soglia: Optional[int] = None
+    ) -> List[str]:
+        if not persistence or not self._admin_ids:
             return []
-        
+        soglia = ore_soglia or getattr(self, "ore_senza_risposta", 24)
+        now = datetime.now(timezone.utc)
+        soglia_dt = now - timedelta(hours=soglia)
         notifica_ids = []
-        now = datetime.now()
-        soglia_scadenza = now + timedelta(days=self.giorni_scadenza)
-        
         try:
-            with persistence._lock:
-                liste_data = persistence._data.get("liste_iptv", {})
-            
-            # Cerca liste in scadenza
-            for lista_id, lista in liste_data.items():
-                stato = lista.get("stato", "")
-                if stato != STATO_LISTA_ATTIVA:
+            ticket_data = await persistence.get_data("ticket") or {}
+            for tid, ticket in ticket_data.items():
+                stato = ticket.get("stato", "")
+                if stato not in ("aperto", "in_lavorazione"):
                     continue
-                
-                data_scadenza = lista.get("data_scadenza")
-                if not data_scadenza:
+                ultimo_msg_str = ticket.get("ultimo_messaggio") or ticket.get("data_creazione", "")
+                if not ultimo_msg_str:
                     continue
-                
                 try:
-                    scadenza_dt = datetime.fromisoformat(data_scadenza)
-                    
-                    # Notifica se la scadenza è entro X giorni
-                    if now <= scadenza_dt <= soglia_scadenza:
-                        user_id = lista.get("user_id")
-                        if not user_id:
-                            continue
-                        
-                        giorni_rimanenti = (scadenza_dt - now).days
-                        
-                        messaggio = (
-                            f"⏰ <b>Scadenza Lista IPTV</b>\n\n"
-                            f"La tua lista scade tra <b>{giorni_rimanenti} giorni</b>\n"
-                            f"Data: {scadenza_dt.strftime('%d/%m/%Y')}\n\n"
-                            f"Rinnova in tempo per non interruzioni!"
-                        )
-                        
-                        notifica_id = await self.invia_notifica(
-                            user_id,
-                            TipoNotifica.SCADENZA_IMMINENTE,
-                            messaggio,
-                            PrioritaNotifica.MEDIA,
-                            {"lista_id": lista_id, "data_scadenza": data_scadenza}
-                        )
-                        notifica_ids.append(notifica_id)
-                        
+                    data_ultimo = datetime.fromisoformat(ultimo_msg_str.replace("Z", "+00:00"))
+                    if data_ultimo < soglia_dt:
+                        for aid in self._admin_ids:
+                            mid = await self.invia_notifica(
+                                aid,
+                                TipoNotifica.TICKET_SENZA_RISPOSTA,
+                                f"Ticket {tid[:8]} senza risposta da {soglia}+h",
+                                PrioritaNotifica.ALTA,
+                                {"ticket_id": tid},
+                            )
+                            notifica_ids.append(mid)
                 except Exception as e:
-                    logger.error(f"Errore nel controllo lista {lista_id}: {e}")
-            
-            if notifica_ids:
-                logger.info(f"Create {len(notifica_ids)} notifiche per scadenze imminenti")
-                
+                    logger.error(f"Errore ticket {tid}: {e}")
         except Exception as e:
-            logger.error(f"Errore nel rilevamento scadenze: {e}")
-        
+            logger.error(f"Errore ticket senza risposta: {e}")
         return notifica_ids
-    
-    async def notifica_stato_servizio(self, vecchio_stato: str, nuovo_stato: str) -> List[int]:
-        """
-        Notifica gli admin quando lo stato del servizio cambia.
-        
-        Args:
-            vecchio_stato: Stato precedente
-            nuovo_stato: Nuovo stato
-            
-        Returns:
-            Lista di ID delle notifiche create
-        """
-        # Determina priorità basata sul nuovo stato
-        if nuovo_stato in [STATO_DISSERVIZIO, STATO_PROBLEMI]:
-            priorità = PrioritaNotifica.CRITICA
-        elif nuovo_stato == STATO_MANUTENZIONE:
-            priorità = PrioritaNotifica.ALTA
-        else:
-            priorità = PrioritaNotifica.MEDIA
-        
-        # Emoji basato sullo stato
-        emoji_stato = {
-            STATO_OPERATIVO: "✅",
-            STATO_PROBLEMI: "⚠️",
-            STATO_MANUTENZIONE: "🔧",
-            STATO_DISSERVIZIO: "❌"
-        }.get(nuovo_stato, "❓")
-        
-        notifica_ids = []
-        now = datetime.now()
-        
-        for admin_id in self._admin_ids:
-            messaggio = (
-                f"{emoji_stato} <b>Stato Servizio Aggiornato</b>\n\n"
-                f"Vecchio stato: {vecchio_stato}\n"
-                f"Nuovo stato: {nuovo_stato}\n"
-                f"Data: {now.strftime('%d/%m/%Y %H:%M')}"
-            )
-            
-            notifica_id = await self.invia_notifica(
-                admin_id,
-                TipoNotifica.STATO_SERVIZIO,
-                messaggio,
-                priorità,
-                {"vecchio_stato": vecchio_stato, "nuovo_stato": nuovo_stato}
-            )
-            notifica_ids.append(notifica_id)
-        
-        logger.info(f"Notifica cambio stato servizio: {vecchio_stato} -> {nuovo_stato}")
-        return notifica_ids
-    
-    # ==================== REPORT GIORNALIERO ====================
-    
-    async def invia_report_giornaliero(self, persistence: DataPersistence, 
-                                       force: bool = False) -> List[int]:
-        """
-        Invia il report giornaliero agli admin.
-        
-        Args:
-            persistence: Istanza di DataPersistence per i dati
-            force: Se True, forza l'invio anche se già inviato oggi
-            
-        Returns:
-            Lista di ID delle notifiche create
-        """
-        now = datetime.now()
-        
-        # Controlla se già inviato oggi
-        if not force and self._ultimo_report:
-            ultimo = self._ultimo_report
-            if ultimo.date() == now.date():
-                logger.debug("Report giornaliero già inviato oggi")
-                return []
-        
-        if not persistence:
-            logger.warning("Persistence non fornito a invia_report_giornaliero")
+
+    async def verifica_backup_fallito(
+        self,
+        callback_invio: Optional[Callable[[], Awaitable[bool]]] = None,
+        admin_ids: Optional[List[int]] = None,
+    ) -> List[str]:
+        if not self._admin_ids:
             return []
-        
+        notifica_ids = []
+        if callback_invio:
+            try:
+                ok = await asyncio.wait_for(callback_invio(), timeout=CALLBACK_TIMEOUT)
+                if not ok:
+                    for aid in admin_ids or self._admin_ids:
+                        mid = await self.invia_notifica(
+                            aid,
+                            TipoNotifica.BACKUP_FALLITO,
+                            "Backup fallito rilevato",
+                            PrioritaNotifica.CRITICA,
+                            {"errore": "callback fallita"},
+                        )
+                        notifica_ids.append(mid)
+            except asyncio.TimeoutError:
+                logger.error("Timeout verifica backup")
+            except Exception as e:
+                logger.error(f"Errore callback backup: {e}")
+        return notifica_ids
+
+    async def invia_report_giornaliero(
+        self, persistence: Any, force: bool = False
+    ) -> List[str]:
+        if not persistence or not self._admin_ids:
+            return []
+        now = datetime.now(timezone.utc)
+        _ultimo = getattr(self, "_ultimo_report", None)
+        if not force and _ultimo:
+            if _ultimo.date() == now.date():
+                return []
         try:
-            # Raccogli statistiche
-            with persistence._lock:
-                utenti = persistence._data.get("utenti", {})
-                liste = persistence._data.get("liste_iptv", {})
-                ticket = persistence._data.get("ticket", {})
-            
-            # Statistiche utenti
-            totale_utenti = len(utenti)
-            utenti_attivi = sum(1 for u in utenti.values() if u.get("stato") == STATO_ATTIVO)
-            
-            # Statistiche liste
-            totale_liste = len(liste)
-            liste_attive = sum(1 for l in liste.values() if l.get("stato") == STATO_LISTA_ATTIVA)
-            liste_scadute = sum(1 for l in liste.values() if l.get("stato") == STATO_LISTA_SCADUTA)
-            
-            # Statistiche ticket
-            totale_ticket = len(ticket)
-            ticket_aperti = sum(1 for t in ticket.values() if t.get("stato") == "aperto")
-            ticket_risolti = sum(1 for t in ticket.values() if t.get("stato") == "risolto")
-            
-            # Statistiche coda notifiche
-            with self._lock:
-                notifiche_coda = len(self._coda_notifiche)
-                notifiche_oggi = sum(
-                    1 for log in self._log_notifiche 
-                    if datetime.fromisoformat(log.data_invio).date() == now.date()
-                )
-            
-            # Costruisci report
-            report = (
-                f"📊 <b>Report Giornaliero</b>\n\n"
-                f"<b>Utenti:</b> {utenti_attivi}/{totale_utenti} attivi\n"
-                f"<b>Liste IPTV:</b> {liste_attive}/{totale_liste} attive, {liste_scadute} scadute\n"
-                f"<b>Ticket:</b> {totale_ticket} totali, {ticket_aperti} aperti, {ticket_risolti} risolti\n"
-                f"<b>Notifiche:</b> {notifiche_coda} in coda, {notifiche_oggi} inviate oggi\n\n"
-                f"<i>Generato: {now.strftime('%d/%m/%Y %H:%M')}</i>"
-            )
-            
+            utenti = await persistence.get_data("utenti") or {}
+            liste = await persistence.get_data("liste_iptv") or {}
+            ticket = await persistence.get_data("ticket") or {}
+            totali_u = len(utenti)
+            attivi_u = sum(1 for u in utenti.values() if u.get("stato") == "attivo")
+            totali_l = len(liste)
+            attivi_l = sum(1 for l in liste.values() if l.get("stato") == "attiva")
+            totali_t = len(ticket)
+            aperti_t = sum(1 for t in ticket.values() if t.get("stato") == "aperto")
+            async with self._lock:
+                nc = len(self._coda_notifiche)
+                no = sum(1 for l in self._log_notifiche
+                        if datetime.fromisoformat(l["data_invio"].replace("Z","+00:00")).date() == now.date())
+            report = f"Report: {attivi_u}/{totali_u} ut, {attivi_l}/{totali_l} ls, {aperti_t}/{totali_t} tk, {nc} coda, {no} oggi"
             notifica_ids = []
-            for admin_id in self._admin_ids:
-                notifica_id = await self.invia_notifica(
-                    admin_id,
+            for aid in self._admin_ids:
+                mid = await self.invia_notifica(
+                    aid,
                     TipoNotifica.REPORT_GIORNALIERO,
                     report,
                     PrioritaNotifica.BASSA,
-                    {"totale_utenti": totale_utenti, "totale_ticket": totale_ticket}
+                    {},
                 )
-                notifica_ids.append(notifica_id)
-            
+                notifica_ids.append(mid)
             self._ultimo_report = now
-            
-            logger.info(f"Report giornaliero inviato a {len(notifica_ids)} admin")
             return notifica_ids
-            
         except Exception as e:
-            logger.error(f"Errore nella generazione report giornaliero: {e}")
+            logger.error(f"Errore report: {e}")
             return []
-    
-    # ==================== METODI DI UTILITÀ ====================
-    
-    def get_statistiche(self) -> Dict[str, Any]:
-        """
-        Restituisce le statistiche del sistema notifiche.
-        
-        Returns:
-            Dizionario con le statistiche
-        """
-        with self._lock:
-            return {
-                "notifiche_in_coda": len(self._coda_notifiche),
-                "notifiche_attive": len(self._notifiche_attive),
-                "log_totale": len(self._log_notifiche),
-                "notifiche_oggi": sum(
-                    1 for log in self._log_notifiche
-                    if datetime.fromisoformat(log.data_invio).date() == datetime.now().date()
-                ),
-                "configurazione": {
-                    "ore_senza_risposta": self.ore_senza_risposta,
-                    "giorni_scadenza": self.giorni_scadenza,
-                    "admin_configurati": len(self._admin_ids)
-                }
-            }
-    
-    async def pulisci_log_notifiche(self, giorni_retention: int = 30) -> int:
-        """
-        Pulisce le vecchie entry dal log delle notifiche.
-        
-        Args:
-            giorni_retention: Giorni di retention per il log
-            
-        Returns:
-            Numero di entry rimosse
-        """
-        now = datetime.now()
-        soglia = now - timedelta(days=giorni_retention)
-        
-        with self._lock:
-            vecchio_count = len(self._log_notifiche)
-            self._log_notifiche = [
-                log for log in self._log_notifiche
-                if datetime.fromisoformat(log.data_invio) > soglia
-            ]
-            rimosse = vecchio_count - len(self._log_notifiche)
-        
-        if rimosse > 0:
-            logger.info(f"Rimosse {rimosse} entry vecchie dal log notifiche")
-        
-        return rimosse
-    
+
+    async def pulisci_log(self, giorni: int = LOG_RETENTION_DAYS) -> int:
+        soglia = datetime.now(timezone.utc) - timedelta(days=giorni)
+        async with self._lock:
+            prec = len(self._log_notifiche)
+            nuovi = deque(maxlen=MAX_LOG_ENTRIES)
+            for l in self._log_notifiche:
+                try:
+                    if datetime.fromisoformat(l["data_invio"].replace("Z","+00:00")) >= soglia:
+                        nuovi.append(l)
+                except Exception:
+                    nuovi.append(l)
+            self._log_notifiche = nuovi
+            rim = prec - len(self._log_notifiche)
+        if rim:
+            logger.info(f"Puliti {rim} log vecchi")
+        return rim
+
     @classmethod
     def reset_instance(cls) -> None:
-        """
-        Resetta l'istanza singleton (utile per i test).
-        """
-        with cls._lock:
-            cls._instance = None
+        import asyncio as a
+        async def _r():
+            async with cls._instance_lock:
+                cls._instance = None
+        try:
+            loop = a.get_event_loop()
+            if loop.is_running():
+                a.run_coroutine_threadsafe(_r(), loop)
+            else:
+                a.run(_r())
+        except RuntimeError:
+            a.run(_r())

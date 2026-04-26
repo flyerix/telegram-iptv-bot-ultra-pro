@@ -10,21 +10,34 @@ import json
 import signal
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from typing import Dict, Any, Optional
 import requests
 
-# Variabile globale per l'application del bot (usata per webhook)
-_bot_application = None
-_webhook_secret_token = None
-
 # Configurazione logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Variabili globali per lo stato del server
+# === VALIDAZIONE INTERNAL_AUTH_KEY ALL'AVVIO ===
+# Se INTERNAL_AUTH_KEY non è impostata, tutte le richieste agli endpoint protetti
+# (/restart, /status) verranno rifiutate. Non usiamo default hardcoded.
+_INTERNAL_AUTH_KEY = os.environ.get('INTERNAL_AUTH_KEY')
+if _INTERNAL_AUTH_KEY is None:
+    logger.error("⚠️  INTERNAL_AUTH_KEY non configurata! Gli endpoint protetti (/restart, /status) non saranno accessibili.")
+    logger.error("⚠️  Imposta la variabile d'ambiente INTERNAL_AUTH_KEY per abilitare le funzionalità protette.")
+else:
+    logger.info("✅ INTERNAL_AUTH_KEY configurata correttamente.")
+
+# Variabile globale per l'application del bot (usata per webhook)
+_bot_application = None
+_webhook_secret_token = None
+
+# === VARIABILI GLOBALI PROTETTE DA LOCK ===
+# Usiamo _state_lock per tutte le modifiche a variabili globali condivise
+_state_lock = threading.Lock()
+
 _server = None
 _server_thread = None
 _is_running = False
@@ -39,8 +52,11 @@ _restart_count = 0
 _last_restart_time = None
 _bot_responsive = True
 
-# Lock per thread-safety
-_state_lock = threading.Lock()
+# Numero di worker per il thread pool (configurabile via env)
+_KEEPALIVE_WORKERS = int(os.environ.get('KEEPALIVE_WORKERS', '10'))
+
+# Limite massimo dimensione body richiesta (10MB)
+_MAX_REQUEST_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # Statistiche globali
 stats = {
@@ -88,9 +104,17 @@ class BotRequestHandler(BaseHTTPRequestHandler):
     
     def _verify_internal_auth(self) -> bool:
         """Verifica l'autenticazione interna per endpoint protetti"""
+        if _INTERNAL_AUTH_KEY is None:
+            # INTERNAL_AUTH_KEY non configurata: nega accesso
+            logger.error("❌ Tentativo di accesso a endpoint protetto senza INTERNAL_AUTH_KEY configurata")
+            return False
         auth_header = self.headers.get('X-Internal-Auth')
-        expected = os.environ.get('INTERNAL_AUTH_KEY', 'keepalive_internal_key_2024')
-        return auth_header == expected
+        return auth_header == _INTERNAL_AUTH_KEY
+    
+    def _verify_localhost(self) -> bool:
+        """Verifica che la richiesta provenga da localhost (127.0.0.1)"""
+        client_ip = self.client_address[0]
+        return client_ip == '127.0.0.1' or client_ip == '::1'
     
     def do_GET(self):
         """Gestisce le richieste GET"""
@@ -98,7 +122,8 @@ class BotRequestHandler(BaseHTTPRequestHandler):
         
         try:
             if self.path == '/':
-                stats["requests"] += 1
+                with _state_lock:
+                    stats["requests"] += 1
                 logger.info(f"Richiesta homepage da {self.client_address}")
                 
                 self._send_json_response({
@@ -110,28 +135,38 @@ class BotRequestHandler(BaseHTTPRequestHandler):
                     "endpoints": {
                         "/": "Homepage",
                         "/ping": "Ping semplice",
-                        "/health": "Stato completo del servizio",
-                        "/status": "Status del bot",
-                        "/restart": "Riavvia il server (POST)"
+                        "/health": "Stato completo del servizio (localhost only)",
+                        "/status": "Status del bot (protetto)",
+                        "/restart": "Riavvia il server (POST, protetto)"
                     }
                 })
             
             elif self.path == '/ping':
-                stats["requests"] += 1
-                stats["ping_requests"] += 1
+                with _state_lock:
+                    stats["requests"] += 1
+                    stats["ping_requests"] += 1
                 
                 self._send_json_response({
                     "status": "pong",
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "bot_responsive": _bot_responsive
                 })
             
             elif self.path == '/health':
-                stats["requests"] += 1
-                stats["health_requests"] += 1
+                with _state_lock:
+                    stats["requests"] += 1
+                    stats["health_requests"] += 1
+                
+                # === PROTEZIONE /health: solo localhost ===
+                if not self._verify_localhost():
+                    logger.warning(f"Tentativo di accesso a /health da IP non autorizzato: {self.client_address[0]}")
+                    self._send_json_response({"error": "Forbidden - endpoint riservato a localhost"}, 403)
+                    return
                 
                 health_status = _perform_deep_health_check()
                 
+                # === RIMUOVIAMO INFORMAZIONI SENSIBILI ===
+                # Non esponiamo percorsi assoluti, dettagli interni del filesystem, ecc.
                 self._send_json_response({
                     "status": "healthy" if health_status["healthy"] else "degraded",
                     "service": "helperbot-keepalive",
@@ -151,21 +186,19 @@ class BotRequestHandler(BaseHTTPRequestHandler):
                         "port": _port,
                         "thread_alive": _server_thread.is_alive() if _server_thread else False
                     },
-                    "watchdog": {
-                        "enabled": _watchdog_enabled,
-                        "interval": _watchdog_interval,
-                        "last_successful": _last_successful_health
-                    },
-                    "restart": {
-                        "count": _restart_count,
-                        "last_time": _last_restart_time
-                    },
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 })
             
             elif self.path == '/status':
-                stats["requests"] += 1
-                stats["status_requests"] += 1
+                with _state_lock:
+                    stats["requests"] += 1
+                    stats["status_requests"] += 1
+                
+                # === ENDPOINT /status PROTETTO ===
+                if not self._verify_internal_auth():
+                    logger.warning(f"Tentativo di accesso non autorizzato a /status da {self.client_address[0]}")
+                    self._send_json_response({"error": "Unauthorized"}, 401)
+                    return
                 
                 bot_status = _get_bot_status()
                 
@@ -192,15 +225,16 @@ class BotRequestHandler(BaseHTTPRequestHandler):
                         "enabled": _watchdog_enabled,
                         "restart_count": _restart_count
                     },
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 })
             
             else:
                 self._send_json_response({"error": "Not found"}, 404)
         
         except Exception as e:
+            with _state_lock:
+                stats["failed_requests"] += 1
             logger.error(f"Errore nella gestione GET: {e}")
-            stats["failed_requests"] += 1
             self._send_json_response({"error": str(e)}, 500)
     
     def do_POST(self):
@@ -208,14 +242,43 @@ class BotRequestHandler(BaseHTTPRequestHandler):
         global stats, _bot_application, _webhook_secret_token
         
         if self.path == '/restart':
-            # Endpoint per riavviare il server
+            # === ENDPOINT /restart PROTETTO ===
+            # Verifica 1: Autenticazione tramite header
             if not self._verify_internal_auth():
-                self._send_json_response({"error": "Unauthorized"}, 401)
+                logger.warning(f"Tentativo non autorizzato di restart da {self.client_address[0]}")
+                self._send_json_response({"error": "Unauthorized - Invalid or missing X-Internal-Auth header"}, 401)
+                return
+            
+            # Verifica 2: La richiesta deve provenire da localhost (protezione CSRF)
+            if not self._verify_localhost():
+                logger.warning(f"Tentativo di restart da IP non-localhost: {self.client_address[0]}")
+                self._send_json_response({"error": "Forbidden - restart allowed only from localhost"}, 403)
+                return
+            
+            # === CONTENT-LENGTH VALIDATION ===
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+            except (ValueError, TypeError):
+                logger.warning("Content-Length non valido nella richiesta restart")
+                self._send_json_response({"error": "Invalid Content-Length header"}, 400)
+                return
+            
+            # Verifica 3: Controllo dimensione body per DoS (max _MAX_REQUEST_SIZE)
+            if content_length > _MAX_REQUEST_SIZE:
+                logger.error(f"Request body too large: {content_length} bytes")
+                self._send_json_response({"error": "Request Entity Too Large"}, 413)
                 return
             
             try:
-                request_body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
-                body = json.loads(request_body.decode('utf-8')) if request_body else {}
+                request_body = self.rfile.read(content_length)
+                # === GESTIONE ERRORE JSON ===
+                try:
+                    body = json.loads(request_body.decode('utf-8')) if request_body else {}
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON decode error in restart request: {e}")
+                    self._send_json_response({"error": "Invalid JSON in request body"}, 400)
+                    return
+                
                 graceful = body.get('graceful', True)
                 
                 logger.warning(f"Richiesta restart ricevuta, graceful={graceful}")
@@ -223,7 +286,7 @@ class BotRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response({
                     "status": "restarting",
                     "message": "Server riavviato",
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 })
                 
                 # Thread per riavviare il server
@@ -234,19 +297,22 @@ class BotRequestHandler(BaseHTTPRequestHandler):
                     _restart_server(restart_port, graceful=graceful)
                 
                 threading.Thread(target=delayed_restart, daemon=True).start()
+                return
                 
             except Exception as e:
                 logger.error(f"Errore nel restart: {e}")
                 self._send_json_response({"error": str(e)}, 500)
-            return
+                return
         
         if self.path == '/webhook':
-            stats["requests"] += 1
-            stats["webhook_requests"] += 1
+            with _state_lock:
+                stats["requests"] += 1
+                stats["webhook_requests"] += 1
             
             if _bot_application is None:
                 logger.error("Application non configurata per webhook")
-                stats["failed_requests"] += 1
+                with _state_lock:
+                    stats["failed_requests"] += 1
                 self._send_json_response({"error": "Bot not configured"}, 500)
                 return
             
@@ -254,19 +320,48 @@ class BotRequestHandler(BaseHTTPRequestHandler):
                 secret_header = self.headers.get('X-Telegram-Bot-Api-Secret-Token')
                 if secret_header != _webhook_secret_token:
                     logger.warning("Token segreto non valido per webhook")
-                    stats["failed_requests"] += 1
+                    with _state_lock:
+                        stats["failed_requests"] += 1
                     self._send_json_response({"error": "Unauthorized"}, 401)
                     return
             
             try:
-                content_length = int(self.headers.get('Content-Length', 0))
+                # === CONTENT-LENGTH VALIDATION ===
+                try:
+                    content_length = int(self.headers.get('Content-Length', 0))
+                except (ValueError, TypeError):
+                    logger.warning("Content-Length non valido nella richiesta webhook")
+                    with _state_lock:
+                        stats["failed_requests"] += 1
+                    self._send_json_response({"error": "Invalid Content-Length header"}, 400)
+                    return
+                
                 if content_length == 0:
                     logger.warning("Nessun dato ricevuto nel webhook")
+                    with _state_lock:
+                        stats["failed_requests"] += 1
                     self._send_json_response({"error": "No data"}, 400)
                     return
                 
+                # === PROTEZIONE DoS: Limite dimensione body ===
+                if content_length > _MAX_REQUEST_SIZE:
+                    logger.error(f"Request body too large: {content_length} bytes (max {_MAX_REQUEST_SIZE})")
+                    with _state_lock:
+                        stats["failed_requests"] += 1
+                    self._send_json_response({"error": "Request Entity Too Large"}, 413)
+                    return
+                
                 body = self.rfile.read(content_length)
-                update_data = json.loads(body.decode('utf-8'))
+                
+                # === GESTIONE ERRORE JSON ===
+                try:
+                    update_data = json.loads(body.decode('utf-8'))
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON decode error in webhook: {e}")
+                    with _state_lock:
+                        stats["failed_requests"] += 1
+                    self._send_json_response({"error": "Invalid JSON"}, 400)
+                    return
                 
                 logger.debug(f"Update ricevuta: {update_data.get('update_id', 'N/A')}")
                 
@@ -288,18 +383,20 @@ class BotRequestHandler(BaseHTTPRequestHandler):
                         logger.error(f"Errore nell'elaborazione async: {e}")
                         raise
                 
-                # Thread pool con timeout per evitare blocchi
-                with ThreadPoolExecutor(max_workers=2) as executor:
+                # === THREAD POOL: aumentato a _KEEPALIVE_WORKERS (default 10) ===
+                with ThreadPoolExecutor(max_workers=_KEEPALIVE_WORKERS) as executor:
                     future = executor.submit(run_async_process)
                     try:
                         future.result(timeout=25)  # 25s timeout (lasciare margine)
                     except TimeoutError:
                         logger.error("Timeout nell'elaborazione webhook")
-                        stats["failed_requests"] += 1
+                        with _state_lock:
+                            stats["failed_requests"] += 1
                         # Non mandiamo 500, il webhook sarà ritentato da Telegram
                     except Exception as e:
                         logger.error(f"Errore nell'elaborazione: {e}")
-                        stats["failed_requests"] += 1
+                        with _state_lock:
+                            stats["failed_requests"] += 1
                 
                 # Risposta vuota (200 OK)
                 self.send_response(200)
@@ -308,18 +405,15 @@ class BotRequestHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b'{}')
                 
-                # Bot ha risposto, è responsive
-                global _bot_responsive
-                _bot_responsive = True
+                # === AGGIORNAMENTO _bot_responsive PROTETTO DA LOCK ===
+                with _state_lock:
+                    global _bot_responsive
+                    _bot_responsive = True
                 
-            except json.JSONDecodeError as e:
-                logger.error(f"Errore parsing JSON: {e}")
-                stats["failed_requests"] += 1
-                self._send_json_response({"error": "Invalid JSON"}, 400)
-            
             except Exception as e:
                 logger.error(f"Errore nel processing del webhook: {e}")
-                stats["failed_requests"] += 1
+                with _state_lock:
+                    stats["failed_requests"] += 1
                 self._send_json_response({"error": str(e)}, 500)
         
         else:
@@ -334,6 +428,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 def _perform_deep_health_check() -> Dict[str, Any]:
     """
     Esegue un health check approfondito del server e del bot.
+    === THREAD-SAFE: Usa lock per letture/scritture variabili condivise ===
     """
     global _last_successful_health, _bot_responsive
     
@@ -367,15 +462,20 @@ def _perform_deep_health_check() -> Dict[str, Any]:
     result["checks"]["bot_configured"] = _bot_application is not None
     
     # Check 4: Verifica che il bot sia stato chiamato di recente
-    if _last_successful_health:
-        time_since_last = time.time() - _last_successful_health
+    _last_health_time = None
+    with _state_lock:
+        _last_health_time = _last_successful_health
+    
+    if _last_health_time:
+        time_since_last = time.time() - _last_health_time
         result["checks"]["recent_activity"] = time_since_last < 300  # 5 minuti
         if time_since_last > 300:
             logger.warning(f"Nessuna attività recente: {time_since_last}s")
             # Non necessariamente unhealthy, ma potrebbe indicare problema
     
     if result["healthy"]:
-        _last_successful_health = time.time()
+        with _state_lock:
+            _last_successful_health = time.time()
     
     return result
 
@@ -403,18 +503,22 @@ def _get_bot_status() -> Dict[str, Any]:
 def set_bot_application(application):
     """
     Imposta l'application del bot per il webhook
+    === THREAD-SAFE: usiamo lock per l'assegnazione ===
     """
     global _bot_application
-    _bot_application = application
+    with _state_lock:
+        _bot_application = application
     logger.info("Application del bot impostata per il webhook")
 
 
 def set_webhook_secret(secret_token: str):
     """
     Imposta il token segreto per la verifica del webhook
+    === THREAD-SAFE: usiamo lock per l'assegnazione ===
     """
     global _webhook_secret_token
-    _webhook_secret_token = secret_token
+    with _state_lock:
+        _webhook_secret_token = secret_token
     logger.info("Token segreto per webhook configurato")
 
 
@@ -432,72 +536,76 @@ def start_server(port: Optional[int] = None, threaded: bool = False) -> bool:
             port = int(port_env)
     
     logger.info(f"=== START_SERVER CALLED === port={port}, threaded={threaded}")
-    global _server, _server_thread, _is_running, _start_time, _port, _restart_count, _last_restart_time
     
-    _port = port
-    
-    if _is_running:
-        logger.warning(f"Server già in esecuzione sulla porta {port}")
-        return False
-    
-    try:
-        _start_time = time.time()
-        stats["start_time"] = datetime.utcnow().isoformat()
-        stats["restart_count"] = _restart_count
+    # === ACQUISIZIONE LOCK PRIMA DI MODIFICARE STATO GLOBALE ===
+    with _state_lock:
+        global _server, _server_thread, _is_running, _start_time, _port, _restart_count, _last_restart_time
         
-        if threaded:
-            logger.info("=== CREATING SERVER THREAD ===")
-            _server_thread = threading.Thread(
-                target=_run_server,
-                args=(port,),
-                daemon=False
-            )
-            _server_thread.start()
-            logger.info(f"=== THREAD STARTED, is_alive={_server_thread.is_alive()} ===")
-            
-            # Attesa per binding
-            logger.info("=== WAITING FOR SERVER BINDING ===")
-            max_wait = 10
-            waited = 0
-            while waited < max_wait:
-                time.sleep(1)
-                waited += 1
-                if verify_server_listening(port):
-                    logger.info(f"=== SERVER IS LISTENING after {waited}s ===")
-                    break
-            
-            # Avvia watchdog thread
-            watchdog_thread = threading.Thread(
-                target=_watchdog_loop,
-                args=(port,),
-                daemon=True,
-                name="WatchdogThread"
-            )
-            watchdog_thread.start()
-            logger.info("=== WATCHDOG THREAD STARTED ===")
-            
-            # Avvia health check thread
-            health_thread = threading.Thread(
-                target=_health_check_loop,
-                args=(port,),
-                daemon=True,
-                name="HealthCheckThread"
-            )
-            health_thread.start()
-            logger.info("=== HEALTH CHECK THREAD STARTED ===")
-        else:
-            logger.info("=== RUNNING SERVER IN MAIN THREAD (BLOCKING) ===")
-            _run_server(port)
+        _port = port
         
-        _is_running = True
-        logger.info(f"=== SERVER STARTUP COMPLETE, _is_running={_is_running} ===")
-        return True
+        if _is_running:
+            logger.warning(f"Server già in esecuzione sulla porta {port}")
+            return False
         
-    except Exception as e:
-        logger.error(f"=== ERROR IN start_server: {e} ===")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
+        try:
+            _start_time = time.time()
+            stats["start_time"] = datetime.now(timezone.utc).isoformat()
+            stats["restart_count"] = _restart_count
+            
+            if threaded:
+                logger.info("=== CREATING SERVER THREAD ===")
+                _server_thread = threading.Thread(
+                    target=_run_server,
+                    args=(port,),
+                    daemon=False
+                )
+                _server_thread.start()
+                logger.info(f"=== THREAD STARTED, is_alive={_server_thread.is_alive()} ===")
+                
+                # Attesa per binding
+                logger.info("=== WAITING FOR SERVER BINDING ===")
+                max_wait = 10
+                waited = 0
+                while waited < max_wait:
+                    time.sleep(1)
+                    waited += 1
+                    if verify_server_listening(port):
+                        logger.info(f"=== SERVER IS LISTENING after {waited}s ===")
+                        break
+                
+                # Avvia watchdog thread
+                watchdog_thread = threading.Thread(
+                    target=_watchdog_loop,
+                    args=(port,),
+                    daemon=True,
+                    name="WatchdogThread"
+                )
+                watchdog_thread.start()
+                logger.info("=== WATCHDOG THREAD STARTED ===")
+                
+                # Avvia health check thread
+                health_thread = threading.Thread(
+                    target=_health_check_loop,
+                    args=(port,),
+                    daemon=True,
+                    name="HealthCheckThread"
+                )
+                health_thread.start()
+                logger.info("=== HEALTH CHECK THREAD STARTED ===")
+            else:
+                logger.info("=== RUNNING SERVER IN MAIN THREAD (BLOCKING) ===")
+                _run_server(port)
+            
+            _is_running = True
+            logger.info(f"=== SERVER STARTUP COMPLETE, _is_running={_is_running} ===")
+            return True
+            
+        except Exception as e:
+            logger.error(f"=== ERROR IN start_server: {e} ===")
+            import traceback
+            logger.error(traceback.format_exc())
+            _is_running = False
+            return False
 
 
 def _watchdog_loop(port: int):
@@ -505,7 +613,7 @@ def _watchdog_loop(port: int):
     Watchdog che monitora lo stato del server e del bot.
     Riavvia automaticamente se il server non risponde.
     """
-    global _watchdog_enabled, _bot_responsive, _restart_count, _last_restart_time
+    global _watchdog_enabled, _bot_responsive
     
     logger.info(f"Watchdog started, interval={_watchdog_interval}s")
     
@@ -522,7 +630,8 @@ def _watchdog_loop(port: int):
                 response = requests.get(f"http://localhost:{port}/ping", timeout=5)
                 if response.status_code == 200:
                     consecutive_failures = 0
-                    _bot_responsive = True
+                    with _state_lock:
+                        _bot_responsive = True
                 else:
                     consecutive_failures += 1
                     logger.warning(f"Watchdog: server risponde con status {response.status_code}")
@@ -540,11 +649,10 @@ def _watchdog_loop(port: int):
                 logger.error(f"Watchdog: {consecutive_failures} fallimenti consecutivi, riavvio...")
                 _restart_server(current_port, graceful=False)
                 consecutive_failures = 0
-                _restart_count += 1
-                _last_restart_time = datetime.utcnow().isoformat()
                 
                 # Reset flag responsive
-                _bot_responsive = False
+                with _state_lock:
+                    _bot_responsive = False
                 
                 # Attesa più lunga dopo restart
                 time.sleep(30)
@@ -582,44 +690,53 @@ def _health_check_loop(port: int):
 def _restart_server(port: int = 8080, graceful: bool = True):
     """
     Riavvia il server HTTP.
+    === OPERAZIONE CRITICA: Tutte le modifiche allo stato sono protette da lock ===
     """
-    global _is_running, _server_thread, _start_time, _restart_count, _last_restart_time
+    global _is_running, _server_thread, _start_time, _restart_count, _last_restart_time, _server
     
     logger.warning(f"Riavvio server (graceful={graceful})...")
     
     if graceful:
         time.sleep(5)
     
-    _is_running = False
+    # === ACQUISIZIONE LOCK per modifiche atomiche ===
+    with _state_lock:
+        _is_running = False
+        
+        # Ferma il server esistente
+        if _server:
+            try:
+                _server.shutdown()
+            except Exception as e:
+                logger.warning(f"Errore shutdown server: {e}")
     
-    # Ferma il server esistente
-    if _server:
-        try:
-            _server.shutdown()
-        except Exception as e:
-            logger.warning(f"Errore shutdown server: {e}")
-    
-    # Attesa per cleanup
+    # Attesa per cleanup (fuori dal lock)
     time.sleep(3)
     
-    # Nuovo thread per il server
-    _server_thread = threading.Thread(
+    # === NUOVO THREAD PER IL SERVER (assegnazione atomica, ma dentro lock per consistenza) ===
+    new_server_thread = threading.Thread(
         target=_run_server,
         args=(port,),
         daemon=True,
         name="ServerThread-Restart"
     )
-    _server_thread.start()
     
-    # Attesa per binding
+    with _state_lock:
+        _server_thread = new_server_thread
+    
+    new_server_thread.start()
+    
+    # Attesa per binding (fuori dal lock)
     time.sleep(5)
     
-    _is_running = True
-    _start_time = time.time()
-    stats["start_time"] = datetime.utcnow().isoformat()
-    _restart_count += 1
-    _last_restart_time = datetime.utcnow().isoformat()
-    stats["restart_count"] = _restart_count
+    # === AGGIORNAMENTO STATO CON LOCK ===
+    with _state_lock:
+        _is_running = True
+        _start_time = time.time()
+        stats["start_time"] = datetime.now(timezone.utc).isoformat()
+        _restart_count += 1
+        _last_restart_time = datetime.now(timezone.utc).isoformat()
+        stats["restart_count"] = _restart_count
     
     logger.info(f"Server riavviato (restart #{_restart_count})")
 
@@ -638,11 +755,15 @@ def _run_server(port: int):
             timeout = 60
         
         server = ReusableTCPServer(('0.0.0.0', port), BotRequestHandler)
-        _server = server
+        
+        # === SET SERVER CON LOCK ===
+        with _state_lock:
+            _server = server
         
         logger.info(f"=== HTTPServer CREATED on 0.0.0.0:{port} ===")
         
-        _is_running = True
+        with _state_lock:
+            _is_running = True
         
         server.serve_forever()
         
@@ -652,7 +773,8 @@ def _run_server(port: int):
         logger.error(f"=== ERROR in _run_server: {e} ===")
         import traceback
         logger.error(traceback.format_exc())
-        _is_running = False
+        with _state_lock:
+            _is_running = False
 
 
 def verify_server_listening(port: int) -> bool:
@@ -687,12 +809,13 @@ def stop_server() -> bool:
         return False
     
     try:
-        _watchdog_enabled = False
-        
-        if _server:
-            _server.shutdown()
-        
-        _is_running = False
+        with _state_lock:
+            _watchdog_enabled = False
+            
+            if _server:
+                _server.shutdown()
+            
+            _is_running = False
         logger.info("Server keep-alive fermato")
         return True
     except Exception as e:
@@ -718,19 +841,21 @@ def get_status() -> Dict[str, Any]:
 
 def reset_stats():
     """Resetta le statistiche delle richieste"""
-    stats["requests"] = 0
-    stats["ping_requests"] = 0
-    stats["health_requests"] = 0
-    stats["status_requests"] = 0
-    stats["webhook_requests"] = 0
-    stats["failed_requests"] = 0
+    with _state_lock:
+        stats["requests"] = 0
+        stats["ping_requests"] = 0
+        stats["health_requests"] = 0
+        stats["status_requests"] = 0
+        stats["webhook_requests"] = 0
+        stats["failed_requests"] = 0
     logger.info("Statistiche resettate")
 
 
 def enable_watchdog(enabled: bool = True):
     """Abilita/disabilita il watchdog"""
     global _watchdog_enabled
-    _watchdog_enabled = enabled
+    with _state_lock:
+        _watchdog_enabled = enabled
     logger.info(f"Watchdog {'abilitato' if enabled else 'disabilitato'}")
 
 

@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: telegram-iptv-bot
+    env: docker
+    plan: free
+    region: oregon
+    buildCommand: ""
+    startCommand: "./start.sh"
+    autoDeploy: true
+    healthCheckPath: /health
+    healthCheckTimeout: 10
+    healthCheckInterval: 30
+    healthCheckRetryThreshold: 3
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: HOST
+        value: 0.0.0.0
+    # Allow the service to receive webhook traffic
+    # Render automatically provides a PORT environment variable
+    # We'll use the same port for the keep-alive server

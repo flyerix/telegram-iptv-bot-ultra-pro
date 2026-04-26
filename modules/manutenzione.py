@@ -6,8 +6,12 @@ Utilizza il modulo di persistenza per salvare i dati su file JSON.
 Integra con il sistema di rate limiting e stato servizio.
 """
 
+import copy
+import os
+import threading
 import uuid
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 from core.data_persistence import DataPersistence
@@ -30,6 +34,10 @@ KEY_RICHIESTE_IPTV_IN_PAUSA = "richieste_iptv_in_pausa"
 KEY_CONFIGURAZIONE = "configurazione"
 KEY_STORICO = "storico_manutenzioni"
 
+# Configurazione da ambiente
+MAX_STORICO_MANUTENZIONI = int(os.getenv("MAX_STORICO_MANUTENZIONI", "50"))
+LOCK_TIMEOUT_SECONDS = int(os.getenv("MANUTENZIONE_LOCK_TIMEOUT", "10"))
+
 
 class ManutenzioneError(Exception):
     """Eccezione personalizzata per errori nella gestione manutenzione."""
@@ -40,7 +48,33 @@ class Manutenzione:
     """
     Classe per la gestione della modalità manutenzione.
     Gestisce attivazione/disattivazione, blocco utenti e messaggi personalizzati.
+    
+    Thread-safety: tutte le operazioni di lettura/scrittura sono protette da RLock
+    a livello di classe (condiviso tra tutte le istanze).
+    Le operazioni sono atomiche: leggi-modifica-scrivi in singola sezione critica.
     """
+    
+    # Lock a livello di classe per thread-safety condivisa tra tutte le istanze
+    _lock = threading.RLock()
+    
+    @classmethod
+    @contextmanager
+    def _locked(cls):
+        """
+        Context manager per acquisire il lock con timeout.
+        Evita deadlock bloccando per al massimo LOCK_TIMEOUT_SECONDS.
+        
+        Raises:
+            ManutenzioneError: Se il lock non può essere acquisito nel timeout
+        """
+        acquired = cls._lock.acquire(timeout=LOCK_TIMEOUT_SECONDS)
+        if not acquired:
+            logger.error(f"Timeout nell'acquisizione del lock Manutenzione dopo {LOCK_TIMEOUT_SECONDS}s")
+            raise ManutenzioneError("Lock timeout in Manutenzione")
+        try:
+            yield
+        finally:
+            cls._lock.release()
     
     # Struttura dati predefinita per la configurazione manutenzione
     DEFAULT_CONFIGURAZIONE: Dict[str, Any] = {
@@ -56,7 +90,7 @@ class Manutenzione:
     }
     
     # Comandi consentiti durante la manutenzione per utenti normali
-    COMANDI_CONSENTITI_DURANTE_MANUTENZIONE = [
+    COMANDI_CONSENTITI_DURANTE_MANUTENZIONE: List[str] = [
         "faq",
         "help",
         "start",
@@ -84,52 +118,76 @@ class Manutenzione:
     
     def _inizializza_dati(self) -> None:
         """Inizializza la struttura dati se non presente."""
-        dati = self.persistence.get_data("manutenzione")
-        if not dati or dati == {}:
-            struttura = self._get_struttura_default()
-            self.persistence.update_data("manutenzione", struttura)
-            logger.info("Struttura dati manutenzione inizializzata")
+        with type(self)._locked():
+            dati = self.persistence.get_data("manutenzione")
+            if not dati or dati == {}:
+                struttura = self._get_struttura_default()
+                self.persistence.update_data("manutenzione", struttura)
+                logger.info("Struttura dati manutenzione inizializzata")
     
     def _get_struttura_default(self) -> Dict[str, Any]:
         """Restituisce una copia della struttura dati predefinita."""
-        import copy
         return copy.deepcopy(self.DEFAULT_CONFIGURAZIONE)
     
     def _get_dati(self) -> Dict[str, Any]:
-        """Ottiene i dati della manutenzione dalla persistenza."""
-        dati = self.persistence.get_data("manutenzione")
-        if not dati:
-            dati = self._get_struttura_default()
-            self.persistence.update_data("manutenzione", dati)
-        return dati
+        """
+        Ottiene i dati della manutenzione dalla persistenza.
+        Returns:
+            Copia profonda dei dati per evitare modifiche esterne dirette.
+        """
+        with type(self)._locked():
+            dati = self.persistence.get_data("manutenzione")
+            if not dati:
+                dati = self._get_struttura_default()
+                self.persistence.update_data("manutenzione", dati)
+            return copy.deepcopy(dati)
     
-    def _salva_dati(self) -> None:
-        """Salva i dati della manutenzione."""
-        # DataPersistence ha auto_save attivo per default
-        pass
+    def _salva_dati(self, dati: Dict[str, Any]) -> None:
+        """
+        Salva i dati della manutenzione.
+        Args:
+            dati: Dizionario dati da salvare (viene serializzato in copia)
+        """
+        with type(self)._locked():
+            self.persistence.update_data("manutenzione", copy.deepcopy(dati))
     
     def _aggiungi_a_storico(self, azione: str, admin_id: Optional[str] = None,
                             motivo: Optional[str] = None) -> None:
-        """Aggiunge un evento allo storico manutenzioni."""
-        dati = self._get_dati()
-        
-        if KEY_STORICO not in dati:
-            dati[KEY_STORICO] = []
-        
-        evento = {
-            "id": str(uuid.uuid4()),
-            "timestamp": datetime.now().isoformat(),
-            "azione": azione,
-            "admin_id": admin_id,
-            "motivo": motivo
-        }
-        dati[KEY_STORICO].append(evento)
-        
-        # Limita lo storico agli ultimi 50 eventi
-        if len(dati.get(KEY_STORICO, [])) > 50:
-            dati[KEY_STORICO] = dati[KEY_STORICO][-50:]
-        
-        self.persistence.update_data("manutenzione", dati)
+        """
+        Aggiunge un evento allo storico manutenzioni in modo atomico.
+        L'operazione di append + trim è atomica sotto lock.
+        """
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            if KEY_STORICO not in dati:
+                dati[KEY_STORICO] = []
+            
+            evento = {
+                "id": str(uuid.uuid4()),
+                "timestamp": datetime.now().isoformat(),
+                "azione": azione,
+                "admin_id": admin_id,
+                "motivo": motivo
+            }
+            dati[KEY_STORICO].append(evento)
+            
+            # Limita lo storico - configurabile via env
+            max_storico = MAX_STORICO_MANUTENZIONI
+            if len(dati[KEY_STORICO]) > max_storico:
+                dati[KEY_STORICO] = dati[KEY_STORICO][-max_storico:]
+            
+            self._salva_dati(dati)
+    
+    def _get_dati_no_lock(self) -> Dict[str, Any]:
+        """
+        Metodo helper per leggere dati senza lock (da usare solo internamente
+        quando il lock è già acquisito).
+        """
+        dati = self.persistence.get_data("manutenzione")
+        if not dati:
+            dati = self._get_struttura_default()
+        return dati
     
     # ==================== GESTIONE ADMIN ====================
     
@@ -143,17 +201,19 @@ class Manutenzione:
         Returns:
             Tuple (bool, messaggio)
         """
-        dati = self._get_dati()
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            admin_ids = dati.get(KEY_ADMIN_IDS, [])
+            if admin_id in admin_ids:
+                return False, f"L'admin {admin_id} è già presente nella lista"
+            
+            admin_ids.append(admin_id)
+            dati[KEY_ADMIN_IDS] = admin_ids
+            self._salva_dati(dati)
+            
+            # Aggiungi alla whitelist del rate limiter se disponibile (fuori lock)
         
-        admin_ids = dati.get(KEY_ADMIN_IDS, [])
-        if admin_id in admin_ids:
-            return False, f"L'admin {admin_id} è già presente nella lista"
-        
-        admin_ids.append(admin_id)
-        dati[KEY_ADMIN_IDS] = admin_ids
-        self.persistence.update_data("manutenzione", dati)
-        
-        # Aggiungi alla whitelist del rate limiter se disponibile
         if self.rate_limiter:
             try:
                 self.rate_limiter.aggiungi_whitelist(admin_id)
@@ -173,17 +233,19 @@ class Manutenzione:
         Returns:
             Tuple (bool, messaggio)
         """
-        dati = self._get_dati()
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            admin_ids = dati.get(KEY_ADMIN_IDS, [])
+            if admin_id not in admin_ids:
+                return False, f"L'admin {admin_id} non è presente nella lista"
+            
+            admin_ids.remove(admin_id)
+            dati[KEY_ADMIN_IDS] = admin_ids
+            self._salva_dati(dati)
+            
+            # Rimuovi dalla whitelist del rate limiter se disponibile (fuori lock)
         
-        admin_ids = dati.get(KEY_ADMIN_IDS, [])
-        if admin_id not in admin_ids:
-            return False, f"L'admin {admin_id} non è presente nella lista"
-        
-        admin_ids.remove(admin_id)
-        dati[KEY_ADMIN_IDS] = admin_ids
-        self.persistence.update_data("manutenzione", dati)
-        
-        # Rimuovi dalla whitelist del rate limiter se disponibile
         if self.rate_limiter:
             try:
                 self.rate_limiter.rimuovi_whitelist(admin_id)
@@ -198,10 +260,12 @@ class Manutenzione:
         Restituisce la lista degli ID admin.
         
         Returns:
-            Lista degli ID admin
+            Lista degli ID admin (copiata)
         """
-        dati = self._get_dati()
-        return dati.get(KEY_ADMIN_IDS, [])
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            # Restituisce copia per evitare modifiche esterne
+            return list(dati.get(KEY_ADMIN_IDS, []))
     
     def is_admin(self, user_id: str) -> bool:
         """
@@ -213,8 +277,9 @@ class Manutenzione:
         Returns:
             True se l'utente è admin, False altrimenti
         """
-        admin_ids = self.get_admin_ids()
-        return str(user_id) in [str(aid) for aid in admin_ids]
+        with type(self)._locked():
+            admin_ids = self.get_admin_ids()
+            return str(user_id) in [str(aid) for aid in admin_ids]
     
     # ==================== ATTIVAZIONE/DISATTIVAZIONE MANUTENZIONE ====================
     
@@ -223,6 +288,8 @@ class Manutenzione:
                            messaggio_personalizzato: Optional[str] = None) -> Dict[str, Any]:
         """
         Attiva la modalità manutenzione.
+        
+        Operazione atomica: verifica, aggiorna, salva in singola sezione critica.
         
         Args:
             admin_id: ID dell'admin che attiva la manutenzione
@@ -236,36 +303,37 @@ class Manutenzione:
         Raises:
             ManutenzioneError: Se l'utente non è admin o la manutenzione è già attiva
         """
-        # Verifica che l'utente sia admin
+        # Verifica che l'utente sia admin (fuori lock per evitare deadlock con chiamate esterne)
         if not self.is_admin(admin_id):
             raise ManutenzioneError(f"L'utente {admin_id} non è autorizzato ad attivare la manutenzione")
         
-        dati = self._get_dati()
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            # Verifica se la manutenzione è già attiva
+            if dati.get(KEY_MANUTENZIONE_ATTIVA, False):
+                raise ManutenzioneError("La modalità manutenzione è già attiva")
+            
+            # Calcola la data di fine
+            data_inizio = datetime.now()
+            if durata_minuti:
+                data_fine = data_inizio + timedelta(minutes=durata_minuti)
+            else:
+                data_fine = None
+            
+            # Aggiorna i dati (operazione atomica)
+            dati[KEY_MANUTENZIONE_ATTIVA] = True
+            dati[KEY_MANUTENZIONE_DATA_INIZIO] = data_inizio.isoformat()
+            dati[KEY_MANUTENZIONE_DATA_FINE] = data_fine.isoformat() if data_fine else None
+            dati[KEY_MANUTENZIONE_MOTIVO] = motivo
+            dati[KEY_MANUTENZIONE_ADMIN_ATTIVATORE] = admin_id
+            dati[KEY_MANUTENZIONE_MESSAGGIO] = messaggio_personalizzato
+            dati[KEY_RICHIESTE_IPTV_IN_PAUSA] = True
+            dati[KEY_TICKET_IN_CODA] = []
+            
+            self._salva_dati(dati)
         
-        # Verifica se la manutenzione è già attiva
-        if dati.get(KEY_MANUTENZIONE_ATTIVA, False):
-            raise ManutenzioneError("La modalità manutenzione è già attiva")
-        
-        # Calcola la data di fine
-        data_inizio = datetime.now()
-        if durata_minuti:
-            data_fine = data_inizio + timedelta(minutes=durata_minuti)
-        else:
-            data_fine = None
-        
-        # Aggiorna i dati
-        dati[KEY_MANUTENZIONE_ATTIVA] = True
-        dati[KEY_MANUTENZIONE_DATA_INIZIO] = data_inizio.isoformat()
-        dati[KEY_MANUTENZIONE_DATA_FINE] = data_fine.isoformat() if data_fine else None
-        dati[KEY_MANUTENZIONE_MOTIVO] = motivo
-        dati[KEY_MANUTENZIONE_ADMIN_ATTIVATORE] = admin_id
-        dati[KEY_MANUTENZIONE_MESSAGGIO] = messaggio_personalizzato
-        dati[KEY_RICHIESTE_IPTV_IN_PAUSA] = True
-        dati[KEY_TICKET_IN_CODA] = []
-        
-        self.persistence.update_data("manutenzione", dati)
-        
-        # Aggiorna lo stato servizio se disponibile
+        # Aggiorna lo stato servizio (fuori lock per evitare deadlock)
         if self.stato_servizio:
             try:
                 from modules.stato_servizio import STATO_MANUTENZIONE
@@ -275,9 +343,10 @@ class Manutenzione:
                     admin_id
                 )
             except Exception as e:
-                logger.warning(f"Errore nell'aggiornare stato servizio: {e}")
+                logger.error(f"Errore critico nell'aggiornare stato servizio: {e}", exc_info=True)
+                # Non silenziare l'errore - logga ma continua (l'aggiornamento stato non è bloccante)
         
-        # Aggiungi allo storico
+        # Aggiungi allo storico (già thread-safe internamente)
         self._aggiungi_a_storico("attivazione", admin_id, motivo)
         
         logger.info(f"Manutenzione attivata da admin {admin_id}. Motivo: {motivo}. "
@@ -297,6 +366,8 @@ class Manutenzione:
         """
         Disattiva la modalità manutenzione.
         
+        Operazione atomica: verifica, aggiorna, salva in singola sezione critica.
+        
         Args:
             admin_id: ID dell'admin che disattiva la manutenzione
             
@@ -306,34 +377,35 @@ class Manutenzione:
         Raises:
             ManutenzioneError: Se l'utente non è admin o la manutenzione non è attiva
         """
-        # Verifica che l'utente sia admin
+        # Verifica che l'utente sia admin (fuori lock)
         if not self.is_admin(admin_id):
             raise ManutenzioneError(f"L'utente {admin_id} non è autorizzato a disattivare la manutenzione")
         
-        dati = self._get_dati()
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            # Verifica se la manutenzione è attiva
+            if not dati.get(KEY_MANUTENZIONE_ATTIVA, False):
+                raise ManutenzioneError("La modalità manutenzione non è attiva")
+            
+            # Salva le informazioni prima di disattivare
+            motivo = dati.get(KEY_MANUTENZIONE_MOTIVO, "N/A")
+            data_inizio = dati.get(KEY_MANUTENZIONE_DATA_INIZIO)
+            ticket_in_coda = copy.deepcopy(dati.get(KEY_TICKET_IN_CODA, []))
+            richieste_pausate = dati.get(KEY_RICHIESTE_IPTV_IN_PAUSA, False)
+            
+            # Disattiva la manutenzione (operazione atomica)
+            dati[KEY_MANUTENZIONE_ATTIVA] = False
+            dati[KEY_MANUTENZIONE_DATA_INIZIO] = None
+            dati[KEY_MANUTENZIONE_DATA_FINE] = None
+            dati[KEY_MANUTENZIONE_MOTIVO] = None
+            dati[KEY_MANUTENZIONE_ADMIN_ATTIVATORE] = None
+            dati[KEY_MANUTENZIONE_MESSAGGIO] = None
+            dati[KEY_RICHIESTE_IPTV_IN_PAUSA] = False
+            
+            self._salva_dati(dati)
         
-        # Verifica se la manutenzione è attiva
-        if not dati.get(KEY_MANUTENZIONE_ATTIVA, False):
-            raise ManutenzioneError("La modalità manutenzione non è attiva")
-        
-        # Salva le informazioni prima di disattivare
-        motivo = dati.get(KEY_MANUTENZIONE_MOTIVO, "N/A")
-        data_inizio = dati.get(KEY_MANUTENZIONE_DATA_INIZIO)
-        ticket_in_coda = dati.get(KEY_TICKET_IN_CODA, [])
-        richieste_pausate = dati.get(KEY_RICHIESTE_IPTV_IN_PAUSA, False)
-        
-        # Disattiva la manutenzione
-        dati[KEY_MANUTENZIONE_ATTIVA] = False
-        dati[KEY_MANUTENZIONE_DATA_INIZIO] = None
-        dati[KEY_MANUTENZIONE_DATA_FINE] = None
-        dati[KEY_MANUTENZIONE_MOTIVO] = None
-        dati[KEY_MANUTENZIONE_ADMIN_ATTIVATORE] = None
-        dati[KEY_MANUTENZIONE_MESSAGGIO] = None
-        dati[KEY_RICHIESTE_IPTV_IN_PAUSA] = False
-        
-        self.persistence.update_data("manutenzione", dati)
-        
-        # Aggiorna lo stato servizio se disponibile
+        # Aggiorna lo stato servizio (fuori lock)
         if self.stato_servizio:
             try:
                 from modules.stato_servizio import STATO_OPERATIVO
@@ -343,7 +415,8 @@ class Manutenzione:
                     admin_id
                 )
             except Exception as e:
-                logger.warning(f"Errore nell'aggiornare stato servizio: {e}")
+                logger.error(f"Errore critico nell'aggiornare stato servizio: {e}", exc_info=True)
+                # Non silenziare l'errore
         
         # Aggiungi allo storico
         self._aggiungi_a_storico("disattivazione", admin_id, motivo)
@@ -364,44 +437,97 @@ class Manutenzione:
     def is_manutenzione_attiva(self) -> bool:
         """
         Verifica se la modalità manutenzione è attiva.
+        Se la data di fine è scaduta, disattiva automaticamente in modo atomico.
         
         Returns:
             True se la manutenzione è attiva, False altrimenti
         """
-        dati = self._get_dati()
-        
-        # Verifica prima il flag esplicito
-        if not dati.get(KEY_MANUTENZIONE_ATTIVA, False):
-            return False
-        
-        # Verifica se è impostata una data di fine e se è passata
-        data_fine = dati.get(KEY_MANUTENZIONE_DATA_FINE)
-        if data_fine:
-            try:
-                data_fine_dt = datetime.fromisoformat(data_fine)
-                if datetime.now() > data_fine_dt:
-                    # La manutenzione è terminata automaticamente
-                    logger.info("Manutenzione terminata automaticamente per raggiungimento data fine")
-                    self._disattivazione_automatica()
-                    return False
-            except (ValueError, TypeError):
-                pass
-        
-        return True
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            # Verifica prima il flag esplicito
+            if not dati.get(KEY_MANUTENZIONE_ATTIVA, False):
+                return False
+            
+            # Verifica se è impostata una data di fine e se è passata
+            data_fine = dati.get(KEY_MANUTENZIONE_DATA_FINE)
+            if data_fine:
+                try:
+                    data_fine_dt = datetime.fromisoformat(data_fine)
+                    if datetime.now() > data_fine_dt:
+                        # La manutenzione è terminata automaticamente
+                        logger.info("Manutenzione terminata automaticamente per raggiungimento data fine")
+                        self._disattivazione_automatica_lock_held(dati)
+                        return False
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Errore parsing data_fine in is_manutenzione_attiva: {e}", exc_info=True)
+            
+            return True
     
-    def _disattivazione_automatica(self) -> None:
-        """Disattiva automaticamente la manutenzione."""
-        dati = self._get_dati()
+    def _disattivazione_automatica_lock_held(self, dati: Dict[str, Any]) -> None:
+        """
+        Disattiva automaticamente la manutenzione (lock già acquisito).
+        Implementa rollback completo se aggiornamento stato servizio fallisce.
+        
+        Args:
+            dati: Dizionario dati (lock già acquisito)
+        """
+        # Salva snapshot dati originali per rollback
+        dati_originali = copy.deepcopy(dati)
+        
+        admin_id = dati.get(KEY_MANUTENZIONE_ADMIN_ATTIVATORE, "system")
+        motivo = dati.get(KEY_MANUTENZIONE_MOTIVO, "Scadenza automatica")
+        
+        # Disattiva e aggiorna storico
         dati[KEY_MANUTENZIONE_ATTIVA] = False
         dati[KEY_MANUTENZIONE_DATA_FINE] = None
-        self.persistence.update_data("manutenzione", dati)
         
+        if KEY_STORICO not in dati:
+            dati[KEY_STORICO] = []
+        evento = {
+            "id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "azione": "disattivazione_automatica",
+            "admin_id": admin_id,
+            "motivo": motivo
+        }
+        dati[KEY_STORICO].append(evento)
+        max_storico = MAX_STORICO_MANUTENZIONI
+        if len(dati[KEY_STORICO]) > max_storico:
+            dati[KEY_STORICO] = dati[KEY_STORICO][-max_storico:]
+        
+        # Reset delle richieste IPTV in pausa (BUG FIX #4)
+        dati[KEY_RICHIESTE_IPTV_IN_PAUSA] = False
+        
+        # Salva immediatamente prima di aggiornare stato servizio
+        self._salva_dati(dati)
+        
+        # Aggiorna stato servizio con rollback completo in caso di fallimento
         if self.stato_servizio:
             try:
                 from modules.stato_servizio import STATO_OPERATIVO
-                self.stato_servizio.aggiorna_stato(STATO_OPERATIVO, "Manutenzione terminata automaticamente")
-            except Exception:
-                pass
+                self.stato_servizio.aggiorna_stato(
+                    STATO_OPERATIVO, 
+                    "Manutenzione terminata automaticamente",
+                    admin_id
+                )
+            except Exception as e:
+                logger.error(f"Errore critico aggiornamento stato servizio: {e}", exc_info=True)
+                # ROLLBACK completo: ripristina snapshot dati originali
+                try:
+                    self._salva_dati(dati_originali)
+                    logger.error("Rollback eseguito: dati ripristinati allo stato pre-disattivazione dopo fallimento stato_servizio")
+                except Exception as rollback_err:
+                    logger.critical(f"Rollback fallito: {rollback_err}", exc_info=True)
+    
+    def _disattivazione_automatica(self) -> None:
+        """
+        Wrapper per _disattivazione_automatica_lock_held.
+        Acquisisce lock e chiama la versione con lock già acquisito.
+        """
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            self._disattivazione_automatica_lock_held(dati)
     
     # ==================== INFORMAZIONI MANUTENZIONE ====================
     
@@ -412,37 +538,38 @@ class Manutenzione:
         Returns:
             Dizionario con le informazioni sulla manutenzione
         """
-        dati = self._get_dati()
-        
-        manutenzione_attiva = self.is_manutenzione_attiva()
-        
-        info = {
-            "manutenzione_attiva": manutenzione_attiva,
-            "data_inizio": dati.get(KEY_MANUTENZIONE_DATA_INIZIO),
-            "data_fine": dati.get(KEY_MANUTENZIONE_DATA_FINE),
-            "motivo": dati.get(KEY_MANUTENZIONE_MOTIVO),
-            "admin_attivatore": dati.get(KEY_MANUTENZIONE_ADMIN_ATTIVATORE),
-            "messaggio_personalizzato": dati.get(KEY_MANUTENZIONE_MESSAGGIO),
-            "ticket_in_coda": dati.get(KEY_TICKET_IN_CODA, []),
-            "richieste_iptv_in_pausa": dati.get(KEY_RICHIESTE_IPTV_IN_PAUSA, False),
-            "admin_ids": dati.get(KEY_ADMIN_IDS, [])
-        }
-        
-        # Calcola durata rimanente
-        if manutenzione_attiva and info["data_fine"]:
-            try:
-                data_fine = datetime.fromisoformat(info["data_fine"])
-                rimanente = data_fine - datetime.now()
-                if rimanente.total_seconds() > 0:
-                    info["durata_rimanente_minuti"] = int(rimanente.total_seconds() / 60)
-                else:
-                    info["durata_rimanente_minuti"] = 0
-            except (ValueError, TypeError):
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            manutenzione_attiva = self.is_manutenzione_attiva()
+            
+            info = {
+                "manutenzione_attiva": manutenzione_attiva,
+                "data_inizio": dati.get(KEY_MANUTENZIONE_DATA_INIZIO),
+                "data_fine": dati.get(KEY_MANUTENZIONE_DATA_FINE),
+                "motivo": dati.get(KEY_MANUTENZIONE_MOTIVO),
+                "admin_attivatore": dati.get(KEY_MANUTENZIONE_ADMIN_ATTIVATORE),
+                "messaggio_personalizzato": dati.get(KEY_MANUTENZIONE_MESSAGGIO),
+                "ticket_in_coda": copy.deepcopy(dati.get(KEY_TICKET_IN_CODA, [])),
+                "richieste_iptv_in_pausa": dati.get(KEY_RICHIESTE_IPTV_IN_PAUSA, False),
+                "admin_ids": list(dati.get(KEY_ADMIN_IDS, []))
+            }
+            
+            # Calcola durata rimanente
+            if manutenzione_attiva and info["data_fine"]:
+                try:
+                    data_fine = datetime.fromisoformat(info["data_fine"])
+                    rimanente = data_fine - datetime.now()
+                    if rimanente.total_seconds() > 0:
+                        info["durata_rimanente_minuti"] = int(rimanente.total_seconds() / 60)
+                    else:
+                        info["durata_rimanente_minuti"] = 0
+                except (ValueError, TypeError):
+                    info["durata_rimanente_minuti"] = None
+            else:
                 info["durata_rimanente_minuti"] = None
-        else:
-            info["durata_rimanente_minuti"] = None
-        
-        return info
+            
+            return info
     
     def get_messaggio_manutenzione(self) -> str:
         """
@@ -451,30 +578,31 @@ class Manutenzione:
         Returns:
             Messaggio di manutenzione
         """
-        dati = self._get_dati()
-        messaggio_personalizzato = dati.get(KEY_MANUTENZIONE_MESSAGGIO)
-        
-        if messaggio_personalizzato:
-            return messaggio_personalizzato
-        
-        # Messaggio predefinito
-        data_fine = dati.get(KEY_MANUTENZIONE_DATA_FINE)
-        if data_fine:
-            try:
-                data_fine_dt = datetime.fromisoformat(data_fine)
-                data_fine_formattata = data_fine_dt.strftime("%d/%m/%Y %H:%M")
-                return (f"⚠️ **Modalità Manutenzione**\n\n"
-                       f"Il bot è temporaneamente fuori servizio per manutenzione.\n\n"
-                       f"**Motivo:** {dati.get(KEY_MANUTENZIONE_MOTIVO, 'Non specificato')}\n"
-                       f"**Ritorno previsto:** {data_fine_formattata}\n\n"
-                       f"Ci scusiamo per il disagio.")
-            except (ValueError, TypeError):
-                pass
-        
-        return (f"⚠️ **Modalità Manutenzione**\n\n"
-               f"Il bot è temporaneamente fuori servizio per manutenzione.\n\n"
-               f"**Motivo:** {dati.get(KEY_MANUTENZIONE_MOTIVO, 'Non specificato')}\n\n"
-               f"Ci scusiamo per il disagio.")
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            messaggio_personalizzato = dati.get(KEY_MANUTENZIONE_MESSAGGIO)
+            
+            if messaggio_personalizzato:
+                return messaggio_personalizzato
+            
+            # Messaggio predefinito
+            data_fine = dati.get(KEY_MANUTENZIONE_DATA_FINE)
+            if data_fine:
+                try:
+                    data_fine_dt = datetime.fromisoformat(data_fine)
+                    data_fine_formattata = data_fine_dt.strftime("%d/%m/%Y %H:%M")
+                    return (f"⚠️ **Modalità Manutenzione**\n\n"
+                            f"Il bot è temporaneamente fuori servizio per manutenzione.\n\n"
+                            f"**Motivo:** {dati.get(KEY_MANUTENZIONE_MOTIVO, 'Non specificato')}\n"
+                            f"**Ritorno previsto:** {data_fine_formattata}\n\n"
+                            f"Ci scusiamo per il disagio.")
+                except (ValueError, TypeError):
+                    pass
+            
+            return (f"⚠️ **Modalità Manutenzione**\n\n"
+                    f"Il bot è temporaneamente fuori servizio per manutenzione.\n\n"
+                    f"**Motivo:** {dati.get(KEY_MANUTENZIONE_MOTIVO, 'Non specificato')}\n\n"
+                    f"Ci scusiamo per il disagio.")
     
     # ==================== GESTIONE COMANDI UTENTE ====================
     
@@ -490,11 +618,11 @@ class Manutenzione:
             Tuple (bool, messaggio). bool indica se il comando è consentito,
             messaggio contiene il messaggio da mostrare se bloccato
         """
-        # Se la manutenzione non è attiva, consenti sempre
+        # Se la manutenzione non è attiva, consenti sempre (is_manutenzione_attiva ha lock interno)
         if not self.is_manutenzione_attiva():
             return True, None
         
-        # Se l'utente è admin, consenti sempre
+        # Se l'utente è admin, consenti sempre (is_admin ha lock interno)
         if self.is_admin(user_id):
             return True, None
         
@@ -522,6 +650,7 @@ class Manutenzione:
                                 tipo_richiesta: str) -> None:
         """
         Aggiunge un ticket alla coda durante la manutenzione.
+        Operazione atomica: lettura, modifica, scrittura in singola sezione critica.
         
         Args:
             ticket_id: ID del ticket
@@ -531,24 +660,25 @@ class Manutenzione:
         if not self.is_manutenzione_attiva():
             return
         
-        dati = self._get_dati()
-        
-        ticket_in_coda = dati.get(KEY_TICKET_IN_CODA, [])
-        
-        # Verifica se il ticket è già in coda
-        for ticket in ticket_in_coda:
-            if ticket.get("ticket_id") == ticket_id:
-                return
-        
-        ticket_in_coda.append({
-            "ticket_id": ticket_id,
-            "user_id": user_id,
-            "tipo_richiesta": tipo_richiesta,
-            "data_inserimento": datetime.now().isoformat()
-        })
-        
-        dati[KEY_TICKET_IN_CODA] = ticket_in_coda
-        self.persistence.update_data("manutenzione", dati)
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            ticket_in_coda = dati.get(KEY_TICKET_IN_CODA, [])
+            
+            # Verifica se il ticket è già in coda
+            for ticket in ticket_in_coda:
+                if ticket.get("ticket_id") == ticket_id:
+                    return
+            
+            ticket_in_coda.append({
+                "ticket_id": ticket_id,
+                "user_id": user_id,
+                "tipo_richiesta": tipo_richiesta,
+                "data_inserimento": datetime.now().isoformat()
+            })
+            
+            dati[KEY_TICKET_IN_CODA] = ticket_in_coda
+            self._salva_dati(dati)
         
         logger.info(f"Ticket {ticket_id} aggiunto alla coda manutenzione")
     
@@ -562,33 +692,36 @@ class Manutenzione:
         Returns:
             Dizionario con i dettagli del ticket rimosso, o None se non trovato
         """
-        dati = self._get_dati()
-        
-        ticket_in_coda = dati.get(KEY_TICKET_IN_CODA, [])
-        ticket_trovato = None
-        
-        for i, ticket in enumerate(ticket_in_coda):
-            if ticket.get("ticket_id") == ticket_id:
-                ticket_trovato = ticket
-                ticket_in_coda.pop(i)
-                break
-        
-        if ticket_trovato:
-            dati[KEY_TICKET_IN_CODA] = ticket_in_coda
-            self.persistence.update_data("manutenzione", dati)
-            logger.info(f"Ticket {ticket_id} rimosso dalla coda manutenzione")
-        
-        return ticket_trovato
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            ticket_in_coda = dati.get(KEY_TICKET_IN_CODA, [])
+            ticket_trovato = None
+            
+            for i, ticket in enumerate(ticket_in_coda):
+                if ticket.get("ticket_id") == ticket_id:
+                    ticket_trovato = copy.deepcopy(ticket)
+                    ticket_in_coda.pop(i)
+                    break
+            
+            if ticket_trovato:
+                dati[KEY_TICKET_IN_CODA] = ticket_in_coda
+                self._salva_dati(dati)
+                logger.info(f"Ticket {ticket_id} rimosso dalla coda manutenzione")
+            
+            return ticket_trovato
     
     def get_ticket_in_coda(self) -> List[Dict[str, Any]]:
         """
         Restituisce la lista dei ticket in coda.
+        Restituisce una copia profonda per evitare modifiche esterne alla lista interna.
         
         Returns:
-            Lista dei ticket in coda
+            Lista dei ticket in coda (copiata)
         """
-        dati = self._get_dati()
-        return dati.get(KEY_TICKET_IN_CODA, [])
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            return copy.deepcopy(dati.get(KEY_TICKET_IN_CODA, []))
     
     def svuota_coda_ticket(self) -> int:
         """
@@ -597,16 +730,17 @@ class Manutenzione:
         Returns:
             Numero di ticket rimossi
         """
-        dati = self._get_dati()
-        
-        ticket_in_coda = dati.get(KEY_TICKET_IN_CODA, [])
-        count = len(ticket_in_coda)
-        
-        dati[KEY_TICKET_IN_CODA] = []
-        self.persistence.update_data("manutenzione", dati)
-        
-        logger.info(f"Coda ticket svuotata: {count} ticket rimossi")
-        return count
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            ticket_in_coda = dati.get(KEY_TICKET_IN_CODA, [])
+            count = len(ticket_in_coda)
+            
+            dati[KEY_TICKET_IN_CODA] = []
+            self._salva_dati(dati)
+            
+            logger.info(f"Coda ticket svuotata: {count} ticket rimossi")
+            return count
     
     # ==================== GESTIONE RICHIESTE IPTV ====================
     
@@ -620,10 +754,9 @@ class Manutenzione:
         if not self.is_manutenzione_attiva():
             return False
         
-        dati = self._get_dati()
-        return dati.get(KEY_RICHIESTE_IPTV_IN_PAUSA, False)
-    
-    # ==================== METODI UTILITY ====================
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            return dati.get(KEY_RICHIESTE_IPTV_IN_PAUSA, False)
     
     def puo_accedere(self, user_id: str) -> bool:
         """
@@ -647,25 +780,27 @@ class Manutenzione:
         Restituisce lo storico delle manutenzioni.
         
         Returns:
-            Lista degli eventi di manutenzione
+            Lista degli eventi di manutenzione (copiata)
         """
-        dati = self._get_dati()
-        return dati.get(KEY_STORICO, [])
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            return copy.deepcopy(dati.get(KEY_STORICO, []))
     
     def resetta_configurazione(self) -> None:
         """
         Resetta la configurazione ai valori predefiniti.
         NOTA: Mantiene la lista degli admin
         """
-        dati = self._get_dati()
-        
-        # Salva la lista admin
-        admin_ids = dati.get(KEY_ADMIN_IDS, [])
-        
-        # Resetta tutto
-        struttura = self._get_struttura_default()
-        struttura[KEY_ADMIN_IDS] = admin_ids
-        
-        self.persistence.update_data("manutenzione", struttura)
-        
-        logger.info("Configurazione manutenzione resettata ai valori predefiniti")
+        with type(self)._locked():
+            dati = self._get_dati_no_lock()
+            
+            # Salva la lista admin
+            admin_ids = dati.get(KEY_ADMIN_IDS, [])
+            
+            # Resetta tutto
+            struttura = self._get_struttura_default()
+            struttura[KEY_ADMIN_IDS] = admin_ids
+            
+            self._salva_dati(struttura)
+            
+            logger.info("Configurazione manutenzione resettata ai valori predefiniti")

@@ -117,8 +117,14 @@ class DataPersistence:
                 
             except json.JSONDecodeError as e:
                 logger.error(f"Errore nel parsing JSON: {e}")
-                # Backup del file corrotto
-                self._backup_corrupted_file()
+                # Controlla se il file esiste e ha dimensioni
+                if self.data_file.exists():
+                    size = self.data_file.stat().st_size
+                    if size == 0:
+                        logger.warning("File dati vuoto, verrà creato nuovo")
+                    else:
+                        logger.warning(f"File JSON corrotto (size: {size} bytes). Creazione backup e reset.")
+                        self._backup_corrupted_file()
                 # Ricrea con struttura predefinita
                 self._data = self._get_default_structure()
                 self._save_to_file()
@@ -129,15 +135,20 @@ class DataPersistence:
                 raise DataPersistenceError(f"Impossibile caricare i dati: {e}")
     
     def _merge_data(self, default: Dict, loaded: Dict) -> None:
-        """Unisce i dati caricati con la struttura predefinita."""
-        for key in default.keys():
-            if key in loaded:
-                if isinstance(default[key], dict) and isinstance(loaded[key], dict):
-                    default[key].update(loaded[key])
-                elif isinstance(default[key], list) and isinstance(loaded[key], list):
-                    default[key] = loaded[key]
+        """Unisce i dati caricati con la struttura predefinita, preservando nuove chiavi."""
+        for key, loaded_value in loaded.items():
+            if key not in default:
+                # Nuova chiave non presente nella struttura default - la aggiungiamo
+                logger.debug(f"Aggiunta nuova chiave '{key}' dal file caricato")
+                default[key] = loaded_value
+            else:
+                default_value = default[key]
+                if isinstance(default_value, dict) and isinstance(loaded_value, dict):
+                    default_value.update(loaded_value)
+                elif isinstance(default_value, list) and isinstance(loaded_value, list):
+                    default[key] = loaded_value
                 else:
-                    default[key] = loaded[key]
+                    default[key] = loaded_value
     
     def _backup_corrupted_file(self) -> None:
         """Crea un backup del file JSON corrotto."""
@@ -150,10 +161,29 @@ class DataPersistence:
                 logger.warning(f"Creato backup del file corrotto: {backup_file}")
         except Exception as e:
             logger.error(f"Errore nella creazione del backup: {e}")
-    
+
+    def _make_serializable(self, obj: Any) -> Any:
+        """
+        Converte ricorsivamente tipi non-JSON-serializzabili in tipi compatibili.
+        Supporta: datetime → isoformat, date → isoformat
+        """
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        elif hasattr(obj, 'isoformat'):  # date, time, etc
+            return obj.isoformat()
+        elif isinstance(obj, dict):
+            return {k: self._make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_serializable(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return [self._make_serializable(item) for item in obj]
+        else:
+            return obj
+
     def _save_to_file(self) -> None:
         """
         Salva i dati su file JSON (metodo interno con lock).
+        WARNING: Questo metodo deve essere chiamato solo se si possiede già self._lock.
         
         Raises:
             DataPersistenceError: Se il salvataggio fallisce
@@ -162,8 +192,11 @@ class DataPersistence:
             # Scrittura atomica: scrive su file temporaneo poi rinomina
             temp_file = self.data_file.with_suffix('.tmp')
             
+            # Prepara dati serializzabili (converti datetime, ecc.)
+            serializable_data = self._make_serializable(self._data)
+            
             with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(self._data, f, indent=4, ensure_ascii=False)
+                json.dump(serializable_data, f, indent=4, ensure_ascii=False)
             
             # Sostituisci il file originale con quello temporaneo
             temp_file.replace(self.data_file)
